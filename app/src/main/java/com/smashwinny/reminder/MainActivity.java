@@ -11,6 +11,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -18,6 +19,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -34,9 +36,12 @@ import java.util.Comparator;
 import java.util.List;
 
 public class MainActivity extends android.app.Activity {
-    private static final int BRAND = Color.rgb(49, 92, 76);
-    private static final int PAPER = Color.rgb(247, 245, 239);
+    private static final int BRAND = Color.rgb(38, 88, 73);
+    private static final int BRAND_SOFT = Color.rgb(224, 235, 230);
+    private static final int PAPER = Color.rgb(248, 247, 243);
     private static final int INK = Color.rgb(34, 39, 36);
+    private static final int MUTED = Color.rgb(103, 113, 108);
+    private static final int LINE = Color.rgb(226, 229, 225);
     private static final String PREFS = "tasks_v1";
     private final List<Task> tasks = new ArrayList<>();
     private LinearLayout list;
@@ -59,30 +64,50 @@ public class MainActivity extends android.app.Activity {
         root.setPadding(dp(20), dp(24), dp(20), dp(40));
         scroll.addView(root);
 
-        TextView eyebrow = text("渐明 · 轻量任务提醒", 13, BRAND, Typeface.BOLD);
-        root.addView(eyebrow);
-        TextView title = text("别让想做的事，\n悄悄消失。", 30, INK, Typeface.BOLD);
-        title.setPadding(0, dp(6), 0, dp(6));
-        root.addView(title);
-        root.addView(text("粘贴下来就算开始。颜色越深，越值得现在关注。", 15, Color.DKGRAY, Typeface.NORMAL));
+        LinearLayout brandRow = row();
+        brandRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView logo = text("✓", 18, Color.WHITE, Typeface.BOLD);
+        logo.setGravity(Gravity.CENTER);
+        logo.setBackground(roundRect(BRAND, 12));
+        brandRow.addView(logo, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        LinearLayout brandCopy = column();
+        brandCopy.setPadding(dp(10), 0, 0, 0);
+        brandCopy.addView(text("渐明", 17, INK, Typeface.BOLD));
+        brandCopy.addView(text("让重要的事保持可见", 12, MUTED, Typeface.NORMAL));
+        brandRow.addView(brandCopy);
+        root.addView(brandRow);
 
+        TextView title = text("今天，先完成\n最值得的一件事。", 29, INK, Typeface.BOLD);
+        title.setLineSpacing(0, 1.08f);
+        LinearLayout.LayoutParams titleLp = matchWrap();
+        titleLp.setMargins(0, dp(26), 0, dp(7));
+        root.addView(title, titleLp);
+        root.addView(text("粘贴即记录。颜色越深，越需要你的注意。", 15, MUTED, Typeface.NORMAL));
+
+        LinearLayout capture = column();
+        capture.setPadding(dp(16), dp(15), dp(16), dp(14));
+        capture.setBackground(roundRect(Color.WHITE, 18, LINE, 1));
+        capture.addView(text("快速收件箱", 12, BRAND, Typeface.BOLD));
         input = new EditText(this);
         input.setHint("粘贴课程、文章或任何要做的事…");
+        input.setHintTextColor(Color.rgb(150, 157, 153));
+        input.setTextColor(INK);
         input.setTextSize(16);
         input.setMinLines(3);
         input.setGravity(Gravity.TOP);
-        input.setBackgroundColor(Color.WHITE);
-        input.setPadding(dp(14), dp(12), dp(14), dp(12));
-        LinearLayout.LayoutParams inputLp = matchWrap();
-        inputLp.setMargins(0, dp(20), 0, dp(10));
-        root.addView(input, inputLp);
+        input.setBackgroundColor(Color.TRANSPARENT);
+        input.setPadding(0, dp(9), 0, dp(8));
+        capture.addView(input, matchWrap());
 
         Button add = button("记录任务");
         add.setOnClickListener(v -> addTask());
-        root.addView(add);
+        capture.addView(add);
+        LinearLayout.LayoutParams captureLp = matchWrap();
+        captureLp.setMargins(0, dp(22), 0, 0);
+        root.addView(capture, captureLp);
 
-        summary = text("", 14, BRAND, Typeface.BOLD);
-        summary.setPadding(0, dp(24), 0, dp(8));
+        summary = text("", 18, INK, Typeface.BOLD);
+        summary.setPadding(0, dp(30), 0, dp(12));
         root.addView(summary);
 
         LinearLayout sorts = row();
@@ -91,7 +116,9 @@ public class MainActivity extends android.app.Activity {
             final int mode = i;
             Button button = smallButton(labels[i]);
             button.setOnClickListener(v -> { sortMode = mode; refreshList(); });
-            sorts.addView(button, new LinearLayout.LayoutParams(0, dp(42), 1));
+            LinearLayout.LayoutParams sortLp = new LinearLayout.LayoutParams(0, dp(40), 1);
+            if (i > 0) sortLp.setMargins(dp(7), 0, 0, 0);
+            sorts.addView(button, sortLp);
         }
         root.addView(sorts);
 
@@ -118,10 +145,21 @@ public class MainActivity extends android.app.Activity {
         else Collections.sort(shown, (a, b) -> Long.compare(a.reminderAt == 0 ? Long.MAX_VALUE : a.reminderAt, b.reminderAt == 0 ? Long.MAX_VALUE : b.reminderAt));
         int done = 0;
         for (Task task : tasks) if (task.state == Task.DONE) done++;
-        summary.setText("任务 " + tasks.size() + " 项  ·  已完成 " + done + " 项");
+        summary.setText(tasks.isEmpty() ? "任务列表" : "任务 " + tasks.size() + " 项  ·  已完成 " + done + " 项");
         if (shown.isEmpty()) {
-            TextView empty = text("第一件事不用规划得很完美，先粘贴进来。", 15, Color.GRAY, Typeface.NORMAL);
-            empty.setPadding(0, dp(28), 0, 0);
+            LinearLayout empty = column();
+            empty.setGravity(Gravity.CENTER_HORIZONTAL);
+            empty.setPadding(dp(20), dp(28), dp(20), dp(28));
+            empty.setBackground(roundRect(Color.WHITE, 18, LINE, 1));
+            ImageView image = new ImageView(this);
+            image.setImageResource(R.drawable.ic_empty_tasks);
+            empty.addView(image, new LinearLayout.LayoutParams(dp(64), dp(64)));
+            TextView emptyTitle = text("先把第一件事放进来", 16, INK, Typeface.BOLD);
+            emptyTitle.setPadding(0, dp(12), 0, dp(5));
+            empty.addView(emptyTitle);
+            TextView emptyBody = text("不必规划得很完美，记录下来就不会遗忘。", 13, MUTED, Typeface.NORMAL);
+            emptyBody.setGravity(Gravity.CENTER);
+            empty.addView(emptyBody);
             list.addView(empty);
             return;
         }
@@ -131,12 +169,16 @@ public class MainActivity extends android.app.Activity {
     private View taskView(Task task) {
         LinearLayout card = row();
         card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(0, dp(13), 0, dp(13));
+        card.setPadding(dp(13), dp(14), dp(12), dp(14));
+        card.setBackground(roundRect(Color.WHITE, 16, LINE, 1));
         card.setOnClickListener(v -> openTask(task));
+        LinearLayout.LayoutParams cardLp = matchWrap();
+        cardLp.setMargins(0, 0, 0, dp(9));
+        card.setLayoutParams(cardLp);
 
         View mark = new View(this);
-        mark.setBackgroundColor(withAlpha(BRAND, new int[]{255, 190, 120, 45}[task.state]));
-        card.addView(mark, new LinearLayout.LayoutParams(dp(7), dp(68)));
+        mark.setBackground(roundRect(withAlpha(BRAND, new int[]{255, 200, 125, 48}[task.state]), 99));
+        card.addView(mark, new LinearLayout.LayoutParams(dp(7), dp(58)));
 
         LinearLayout copy = column();
         copy.setPadding(dp(12), 0, dp(8), 0);
@@ -147,7 +189,9 @@ public class MainActivity extends android.app.Activity {
         String stateName = new String[]{"未查看", "进行中", "已查看", "已完成"}[task.state];
         String meta = stateName + " · " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(task.createdAt);
         if (task.reminderAt > 0) meta += "\n提醒 " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(task.reminderAt);
-        copy.addView(text(meta, 12, Color.GRAY, Typeface.NORMAL));
+        TextView metaView = text(meta, 12, MUTED, Typeface.NORMAL);
+        metaView.setPadding(0, dp(6), 0, 0);
+        copy.addView(metaView);
         card.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         if (task.state != Task.DONE) {
@@ -220,8 +264,10 @@ public class MainActivity extends android.app.Activity {
     private LinearLayout column() { LinearLayout v = new LinearLayout(this); v.setOrientation(LinearLayout.VERTICAL); return v; }
     private LinearLayout row() { LinearLayout v = new LinearLayout(this); v.setOrientation(LinearLayout.HORIZONTAL); return v; }
     private TextView text(String value, int sp, int color, int style) { TextView v = new TextView(this); v.setText(value); v.setTextSize(sp); v.setTextColor(color); v.setTypeface(Typeface.DEFAULT, style); return v; }
-    private Button button(String value) { Button b = new Button(this); b.setText(value); b.setTextColor(Color.WHITE); b.setBackgroundColor(BRAND); return b; }
-    private Button smallButton(String value) { Button b = new Button(this); b.setText(value); b.setTextSize(12); b.setAllCaps(false); return b; }
+    private Button button(String value) { Button b = new Button(this); b.setText("＋  " + value); b.setTextColor(Color.WHITE); b.setTextSize(14); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setAllCaps(false); b.setBackground(roundRect(BRAND, 12)); return b; }
+    private Button smallButton(String value) { Button b = new Button(this); b.setText(value); b.setTextColor(BRAND); b.setTextSize(12); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setAllCaps(false); b.setBackground(roundRect(BRAND_SOFT, 99)); return b; }
+    private GradientDrawable roundRect(int color, int radiusDp) { return roundRect(color, radiusDp, Color.TRANSPARENT, 0); }
+    private GradientDrawable roundRect(int color, int radiusDp, int strokeColor, int strokeDp) { GradientDrawable d = new GradientDrawable(); d.setColor(color); d.setCornerRadius(dp(radiusDp)); if (strokeDp > 0) d.setStroke(dp(strokeDp), strokeColor); return d; }
     private LinearLayout.LayoutParams matchWrap() { return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT); }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private int withAlpha(int color, int alpha) { return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color)); }

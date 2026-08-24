@@ -19,7 +19,7 @@ public class ReminderReceiver extends BroadcastReceiver {
         Intent open = new Intent(context, MainActivity.class);
         PendingIntent pending = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         android.app.Notification notification = new android.app.Notification.Builder(context, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_popup_reminder)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle("渐明 · 该看看这件事了")
                 .setContentText(intent.getStringExtra("text"))
                 .setContentIntent(pending).setAutoCancel(true).build();
