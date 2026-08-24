@@ -18,11 +18,14 @@ public class ReminderReceiver extends BroadcastReceiver {
         }
         Intent open = new Intent(context, MainActivity.class);
         PendingIntent pending = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        android.app.Notification notification = new android.app.Notification.Builder(context, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_notification)
+        android.app.Notification.Builder builder = Build.VERSION.SDK_INT >= 26
+                ? new android.app.Notification.Builder(context, CHANNEL_ID)
+                : new android.app.Notification.Builder(context);
+        android.app.Notification notification = builder.setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle("渐明 · 该看看这件事了")
                 .setContentText(intent.getStringExtra("text"))
                 .setContentIntent(pending).setAutoCancel(true).build();
-        manager.notify((int) intent.getLongExtra("id", 1), notification);
+        String id = intent.getStringExtra("id");
+        manager.notify(id == null ? 1 : id.hashCode(), notification);
     }
 }

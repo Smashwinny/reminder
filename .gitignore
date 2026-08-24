@@ -3,4 +3,5 @@
 local.properties
 **/build/
 tmp/
+sync-server/data/
 *.iml

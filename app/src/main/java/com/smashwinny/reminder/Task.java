@@ -9,29 +9,35 @@ final class Task {
     static final int SEEN = 2;
     static final int DONE = 3;
 
-    long id;
+    String id;
     String text;
     long createdAt;
+    long updatedAt;
     long reminderAt;
     int state;
+    boolean deleted;
 
-    Task(long id, String text, long createdAt) {
+    Task(String id, String text, long createdAt) {
         this.id = id;
         this.text = text;
         this.createdAt = createdAt;
+        this.updatedAt = createdAt;
         this.state = NEW;
     }
 
     JSONObject toJson() throws JSONException {
         return new JSONObject()
                 .put("id", id).put("text", text).put("createdAt", createdAt)
-                .put("reminderAt", reminderAt).put("state", state);
+                .put("updatedAt", updatedAt).put("reminderAt", reminderAt)
+                .put("state", state).put("deleted", deleted);
     }
 
     static Task fromJson(JSONObject json) throws JSONException {
-        Task task = new Task(json.getLong("id"), json.getString("text"), json.getLong("createdAt"));
+        Task task = new Task(String.valueOf(json.get("id")), json.getString("text"), json.getLong("createdAt"));
+        task.updatedAt = json.optLong("updatedAt", task.createdAt);
         task.reminderAt = json.optLong("reminderAt");
         task.state = json.optInt("state");
+        task.deleted = json.optBoolean("deleted");
         return task;
     }
 }

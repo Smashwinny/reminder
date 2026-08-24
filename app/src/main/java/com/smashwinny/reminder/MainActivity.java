@@ -27,13 +27,20 @@ import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
+import java.util.UUID;
 
 public class MainActivity extends android.app.Activity {
     private static final int BRAND = Color.rgb(38, 88, 73);
@@ -74,7 +81,10 @@ public class MainActivity extends android.app.Activity {
         brandCopy.setPadding(dp(10), 0, 0, 0);
         brandCopy.addView(text("渐明", 17, INK, Typeface.BOLD));
         brandCopy.addView(text("让重要的事保持可见", 12, MUTED, Typeface.NORMAL));
-        brandRow.addView(brandCopy);
+        brandRow.addView(brandCopy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        Button sync = smallButton("同步");
+        sync.setOnClickListener(v -> showSyncDialog());
+        brandRow.addView(sync, new LinearLayout.LayoutParams(dp(76), dp(40)));
         root.addView(brandRow);
 
         TextView title = text("今天，先完成\n最值得的一件事。", 29, INK, Typeface.BOLD);
@@ -131,7 +141,8 @@ public class MainActivity extends android.app.Activity {
     private void addTask() {
         String value = input.getText().toString().trim();
         if (value.isEmpty()) { Toast.makeText(this, "先粘贴或输入一件事", Toast.LENGTH_SHORT).show(); return; }
-        tasks.add(0, new Task(System.currentTimeMillis(), value, System.currentTimeMillis()));
+        long now = System.currentTimeMillis();
+        tasks.add(0, new Task(UUID.randomUUID().toString(), value, now));
         input.setText("");
         save();
         refreshList();
@@ -139,13 +150,14 @@ public class MainActivity extends android.app.Activity {
 
     private void refreshList() {
         list.removeAllViews();
-        List<Task> shown = new ArrayList<>(tasks);
-        if (sortMode == 0) Collections.sort(shown, Comparator.comparingInt(t -> t.state));
+        List<Task> shown = new ArrayList<>();
+        for (Task task : tasks) if (!task.deleted) shown.add(task);
+        if (sortMode == 0) Collections.sort(shown, (a, b) -> Integer.compare(a.state, b.state));
         else if (sortMode == 1) Collections.sort(shown, (a, b) -> Long.compare(b.createdAt, a.createdAt));
         else Collections.sort(shown, (a, b) -> Long.compare(a.reminderAt == 0 ? Long.MAX_VALUE : a.reminderAt, b.reminderAt == 0 ? Long.MAX_VALUE : b.reminderAt));
         int done = 0;
-        for (Task task : tasks) if (task.state == Task.DONE) done++;
-        summary.setText(tasks.isEmpty() ? "任务列表" : "任务 " + tasks.size() + " 项  ·  已完成 " + done + " 项");
+        for (Task task : shown) if (task.state == Task.DONE) done++;
+        summary.setText(shown.isEmpty() ? "任务列表" : "任务 " + shown.size() + " 项  ·  已完成 " + done + " 项");
         if (shown.isEmpty()) {
             LinearLayout empty = column();
             empty.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -196,14 +208,14 @@ public class MainActivity extends android.app.Activity {
 
         if (task.state != Task.DONE) {
             Button done = smallButton("完成");
-            done.setOnClickListener(v -> { task.state = Task.DONE; cancelAlarm(task); save(); refreshList(); });
+            done.setOnClickListener(v -> { task.state = Task.DONE; task.updatedAt = System.currentTimeMillis(); cancelAlarm(task); save(); refreshList(); });
             card.addView(done);
         }
         return card;
     }
 
     private void openTask(Task task) {
-        if (task.state == Task.NEW) { task.state = Task.SEEN; save(); refreshList(); }
+        if (task.state == Task.NEW) { task.state = Task.SEEN; task.updatedAt = System.currentTimeMillis(); save(); refreshList(); }
         String[] actions = task.state == Task.DONE
                 ? new String[]{"恢复任务", "删除任务"}
                 : new String[]{"开始任务", "设置提醒", "完成任务", "删除任务"};
@@ -214,11 +226,11 @@ public class MainActivity extends android.app.Activity {
             else if (which == 1) chooseReminder(task);
             else if (which == 2) { task.state = Task.DONE; cancelAlarm(task); }
             else removeTask(task);
-            save(); refreshList();
+            task.updatedAt = System.currentTimeMillis(); save(); refreshList();
         }).setNegativeButton("关闭", null).show();
     }
 
-    private void removeTask(Task task) { cancelAlarm(task); tasks.remove(task); }
+    private void removeTask(Task task) { cancelAlarm(task); task.deleted = true; task.updatedAt = System.currentTimeMillis(); }
 
     private void chooseReminder(Task task) {
         Calendar calendar = Calendar.getInstance();
@@ -228,6 +240,7 @@ public class MainActivity extends android.app.Activity {
                 calendar.set(Calendar.HOUR_OF_DAY, hour); calendar.set(Calendar.MINUTE, minute); calendar.set(Calendar.SECOND, 0);
                 if (calendar.getTimeInMillis() <= System.currentTimeMillis()) { Toast.makeText(this, "提醒时间需要晚于现在", Toast.LENGTH_SHORT).show(); return; }
                 task.reminderAt = calendar.getTimeInMillis();
+                task.updatedAt = System.currentTimeMillis();
                 scheduleAlarm(task); save(); refreshList();
             }, calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE), true).show();
         }, calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH)).show();
@@ -235,7 +248,7 @@ public class MainActivity extends android.app.Activity {
 
     private PendingIntent alarmIntent(Task task) {
         Intent intent = new Intent(this, ReminderReceiver.class).putExtra("id", task.id).putExtra("text", task.text);
-        return PendingIntent.getBroadcast(this, (int) task.id, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        return PendingIntent.getBroadcast(this, task.id.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
 
     private void scheduleAlarm(Task task) {
@@ -256,6 +269,81 @@ public class MainActivity extends android.app.Activity {
         catch (JSONException ignored) { Toast.makeText(this, "任务保存失败", Toast.LENGTH_LONG).show(); }
     }
 
+    private void showSyncDialog() {
+        String savedUrl = getSharedPreferences(PREFS, MODE_PRIVATE).getString("sync_url", "http://");
+        String savedCode = getSharedPreferences(PREFS, MODE_PRIVATE).getString("sync_code", "");
+        LinearLayout form = column();
+        form.setPadding(dp(22), 0, dp(22), 0);
+        EditText url = new EditText(this);
+        url.setHint("电脑地址，例如 http://192.168.1.8:8787");
+        url.setSingleLine(true);
+        url.setText(savedUrl);
+        EditText code = new EditText(this);
+        code.setHint("同步码，例如 123456");
+        code.setSingleLine(true);
+        code.setText(savedCode);
+        form.addView(url, matchWrap());
+        form.addView(code, matchWrap());
+        new AlertDialog.Builder(this)
+                .setTitle("手机与电脑同步")
+                .setMessage("电脑运行 sync-server 后，填写页面显示的地址和同步码。")
+                .setView(form)
+                .setPositiveButton("立即同步", (dialog, which) -> {
+                    String server = url.getText().toString().trim().replaceAll("/+$", "");
+                    String syncCode = code.getText().toString().trim();
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("sync_url", server).putString("sync_code", syncCode).apply();
+                    syncNow(server, syncCode);
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void syncNow(String server, String code) {
+        if (!server.startsWith("http://") && !server.startsWith("https://")) {
+            Toast.makeText(this, "电脑地址需要以 http:// 或 https:// 开头", Toast.LENGTH_LONG).show();
+            return;
+        }
+        Toast.makeText(this, "正在同步…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            try {
+                JSONObject body = new JSONObject().put("code", code);
+                JSONArray local = new JSONArray();
+                for (Task task : tasks) local.put(task.toJson());
+                body.put("tasks", local);
+                byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+                connection = (HttpURLConnection) new URL(server + "/api/sync").openConnection();
+                connection.setConnectTimeout(6000);
+                connection.setReadTimeout(8000);
+                connection.setRequestMethod("POST");
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                connection.setDoOutput(true);
+                try (OutputStream output = connection.getOutputStream()) { output.write(bytes); }
+                int status = connection.getResponseCode();
+                BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        status >= 200 && status < 300 ? connection.getInputStream() : connection.getErrorStream(), StandardCharsets.UTF_8));
+                StringBuilder response = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) response.append(line);
+                if (status != 200) throw new IllegalStateException(new JSONObject(response.toString()).optString("error", "服务器错误 " + status));
+                JSONArray merged = new JSONObject(response.toString()).getJSONArray("tasks");
+                List<Task> received = new ArrayList<>();
+                for (int i = 0; i < merged.length(); i++) received.add(Task.fromJson(merged.getJSONObject(i)));
+                runOnUiThread(() -> {
+                    tasks.clear();
+                    tasks.addAll(received);
+                    save();
+                    refreshList();
+                    Toast.makeText(this, "同步完成，共 " + received.size() + " 条记录", Toast.LENGTH_SHORT).show();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> Toast.makeText(this, "同步失败：" + error.getMessage(), Toast.LENGTH_LONG).show());
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        }).start();
+    }
+
     private void requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 7);
@@ -264,7 +352,7 @@ public class MainActivity extends android.app.Activity {
     private LinearLayout column() { LinearLayout v = new LinearLayout(this); v.setOrientation(LinearLayout.VERTICAL); return v; }
     private LinearLayout row() { LinearLayout v = new LinearLayout(this); v.setOrientation(LinearLayout.HORIZONTAL); return v; }
     private TextView text(String value, int sp, int color, int style) { TextView v = new TextView(this); v.setText(value); v.setTextSize(sp); v.setTextColor(color); v.setTypeface(Typeface.DEFAULT, style); return v; }
-    private Button button(String value) { Button b = new Button(this); b.setText("＋  " + value); b.setTextColor(Color.WHITE); b.setTextSize(14); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setAllCaps(false); b.setBackground(roundRect(BRAND, 12)); return b; }
+    private Button button(String value) { Button b = new Button(this); b.setText(String.format("＋  %s", value)); b.setTextColor(Color.WHITE); b.setTextSize(14); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setAllCaps(false); b.setBackground(roundRect(BRAND, 12)); return b; }
     private Button smallButton(String value) { Button b = new Button(this); b.setText(value); b.setTextColor(BRAND); b.setTextSize(12); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setAllCaps(false); b.setBackground(roundRect(BRAND_SOFT, 99)); return b; }
     private GradientDrawable roundRect(int color, int radiusDp) { return roundRect(color, radiusDp, Color.TRANSPARENT, 0); }
     private GradientDrawable roundRect(int color, int radiusDp, int strokeColor, int strokeDp) { GradientDrawable d = new GradientDrawable(); d.setColor(color); d.setCornerRadius(dp(radiusDp)); if (strokeDp > 0) d.setStroke(dp(strokeDp), strokeColor); return d; }
