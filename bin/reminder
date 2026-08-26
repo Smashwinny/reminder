@@ -23,6 +23,20 @@ server_ready() {
   curl -fsS --max-time 1 "http://127.0.0.1:$PORT/" >/dev/null 2>&1
 }
 
+show_credentials() {
+  if [[ -s "$TUNNEL_URL_FILE" ]] && systemctl --user is-active --quiet "$TUNNEL_UNIT" 2>/dev/null; then
+    echo "手机公网同步地址：$(tr -d '\r\n' < "$TUNNEL_URL_FILE")"
+  else
+    lan_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -Ev '^(127\.|172\.|$)' | head -n 1 || true)"
+    if [[ -n "$lan_ip" ]]; then echo "手机局域网地址：http://$lan_ip:$PORT"; fi
+  fi
+  if [[ -s "$ACTIVE_CODE_FILE" ]]; then
+    echo "同步密钥：$(tr -d '\r\n' < "$ACTIVE_CODE_FILE")"
+  else
+    echo "尚未生成同步密钥，请先运行 reminder internet。"
+  fi
+}
+
 stop_server() {
   if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet "$TUNNEL_UNIT"; then
     systemctl --user stop "$TUNNEL_UNIT"
@@ -54,11 +68,13 @@ case "${1:-start}" in
     else
       echo "公网同步未启动。运行 reminder internet 开启。"
     fi
+    show_credentials
     exit 0
     ;;
+  code) show_credentials; exit 0 ;;
   start|open) MODE="local" ;;
   internet) MODE="internet" ;;
-  *) echo "用法：reminder [start|open|internet|status|stop]"; exit 2 ;;
+  *) echo "用法：reminder [start|open|internet|code|status|stop]"; exit 2 ;;
 esac
 
 if [[ "$MODE" == "internet" ]]; then

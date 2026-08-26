@@ -452,7 +452,7 @@ public class MainActivity extends android.app.Activity {
         form.addView(code, matchWrap());
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("手机与电脑同步")
-                .setMessage("电脑运行 reminder internet 后，手机在任意 Wi-Fi 或蜂窝网络都能同步。离线时仍可照常记录。")
+                .setMessage("找不到地址或密钥？在电脑终端输入 reminder code 可随时重新查看。手机在任意 Wi-Fi 或蜂窝网络都能同步。")
                 .setView(form)
                 .setPositiveButton("双向同步", null)
                 .setNeutralButton("仅接收", null)

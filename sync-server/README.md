@@ -15,10 +15,17 @@ reminder internet
 
 把这两项粘贴到手机 App 的同步对话框即可。电脑网页仍在 `http://localhost:8787` 打开，首次使用也会询问同步密钥，网页源码不包含密钥。
 
+如果终端已经关闭或忘记同步信息，随时输入：
+
+```bash
+reminder code
+```
+
 其他命令：
 
 ```bash
 reminder status
+reminder code       # 显示当前手机同步地址和密钥
 reminder stop
 reminder            # 仅使用同一局域网时
 ```
