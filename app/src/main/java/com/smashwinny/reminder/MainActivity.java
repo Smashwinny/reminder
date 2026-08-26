@@ -7,6 +7,8 @@ import android.app.AlertDialog;
 import android.app.DatePickerDialog;
 import android.app.PendingIntent;
 import android.app.TimePickerDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -450,6 +452,29 @@ public class MainActivity extends android.app.Activity {
         code.setText(savedCode);
         form.addView(url, matchWrap());
         form.addView(code, matchWrap());
+        LinearLayout codeActions = row();
+        Button revealCode = smallButton("显示密钥");
+        Button copyCode = smallButton("复制密钥");
+        codeActions.addView(revealCode, new LinearLayout.LayoutParams(0, dp(40), 1));
+        LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(0, dp(40), 1);
+        copyLp.setMargins(dp(8), 0, 0, 0);
+        codeActions.addView(copyCode, copyLp);
+        form.addView(codeActions, matchWrap());
+        revealCode.setOnClickListener(v -> {
+            boolean hidden = (code.getInputType() & InputType.TYPE_TEXT_VARIATION_PASSWORD) != 0;
+            code.setInputType(InputType.TYPE_CLASS_TEXT | (hidden ? InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD : InputType.TYPE_TEXT_VARIATION_PASSWORD));
+            code.setSelection(code.length());
+            revealCode.setText(hidden ? "隐藏密钥" : "显示密钥");
+        });
+        copyCode.setOnClickListener(v -> {
+            String value = code.getText().toString();
+            if (value.isEmpty()) {
+                Toast.makeText(this, "当前还没有保存同步密钥", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("渐明同步密钥", value));
+            Toast.makeText(this, "同步密钥已复制", Toast.LENGTH_SHORT).show();
+        });
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("手机与电脑同步")
                 .setMessage("找不到地址或密钥？在电脑终端输入 reminder code 可随时重新查看。手机在任意 Wi-Fi 或蜂窝网络都能同步。")
