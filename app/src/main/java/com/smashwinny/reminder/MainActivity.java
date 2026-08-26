@@ -49,6 +49,14 @@ public class MainActivity extends android.app.Activity {
     private static final int INK = Color.rgb(34, 39, 36);
     private static final int MUTED = Color.rgb(103, 113, 108);
     private static final int LINE = Color.rgb(226, 229, 225);
+    private static final int NEW_FILL = Color.rgb(255, 226, 226);
+    private static final int NEW_STRONG = Color.rgb(199, 62, 62);
+    private static final int SEEN_FILL = Color.rgb(223, 235, 255);
+    private static final int SEEN_STRONG = Color.rgb(57, 105, 178);
+    private static final int DOING_FILL = Color.rgb(255, 242, 191);
+    private static final int DOING_STRONG = Color.rgb(160, 115, 16);
+    private static final int DONE_FILL = Color.rgb(221, 243, 226);
+    private static final int DONE_STRONG = Color.rgb(43, 126, 70);
     private static final String PREFS = "tasks_v1";
     private final List<Task> tasks = new ArrayList<>();
     private LinearLayout list;
@@ -152,7 +160,7 @@ public class MainActivity extends android.app.Activity {
         list.removeAllViews();
         List<Task> shown = new ArrayList<>();
         for (Task task : tasks) if (!task.deleted) shown.add(task);
-        if (sortMode == 0) Collections.sort(shown, (a, b) -> Integer.compare(a.state, b.state));
+        if (sortMode == 0) Collections.sort(shown, (a, b) -> Integer.compare(taskPriority(a), taskPriority(b)));
         else if (sortMode == 1) Collections.sort(shown, (a, b) -> Long.compare(b.createdAt, a.createdAt));
         else Collections.sort(shown, (a, b) -> Long.compare(a.reminderAt == 0 ? Long.MAX_VALUE : a.reminderAt, b.reminderAt == 0 ? Long.MAX_VALUE : b.reminderAt));
         int done = 0;
@@ -181,19 +189,15 @@ public class MainActivity extends android.app.Activity {
     private View taskView(Task task) {
         LinearLayout card = row();
         card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(dp(13), dp(14), dp(12), dp(14));
-        card.setBackground(roundRect(Color.WHITE, 16, LINE, 1));
+        card.setPadding(dp(15), dp(15), dp(13), dp(15));
+        card.setBackground(roundRect(stateFill(task), 16, stateStrong(task), 1));
         card.setOnClickListener(v -> openTask(task));
         LinearLayout.LayoutParams cardLp = matchWrap();
         cardLp.setMargins(0, 0, 0, dp(9));
         card.setLayoutParams(cardLp);
 
-        View mark = new View(this);
-        mark.setBackground(roundRect(withAlpha(BRAND, new int[]{255, 200, 125, 48}[task.state]), 99));
-        card.addView(mark, new LinearLayout.LayoutParams(dp(7), dp(58)));
-
         LinearLayout copy = column();
-        copy.setPadding(dp(12), 0, dp(8), 0);
+        copy.setPadding(0, 0, dp(10), 0);
         String firstLine = task.text.split("\\n", 2)[0];
         TextView taskText = text(firstLine, 16, task.state == Task.DONE ? Color.GRAY : INK, Typeface.BOLD);
         if (task.state == Task.DONE) taskText.setPaintFlags(taskText.getPaintFlags() | android.graphics.Paint.STRIKE_THRU_TEXT_FLAG);
@@ -206,12 +210,42 @@ public class MainActivity extends android.app.Activity {
         copy.addView(metaView);
         card.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        if (task.state != Task.DONE) {
-            Button done = smallButton("完成");
-            done.setOnClickListener(v -> { task.state = Task.DONE; task.updatedAt = System.currentTimeMillis(); cancelAlarm(task); save(); refreshList(); });
-            card.addView(done);
-        }
+        TextView doneBox = text(task.state == Task.DONE ? "✓" : "", 21,
+                task.state == Task.DONE ? Color.WHITE : stateStrong(task), Typeface.BOLD);
+        doneBox.setContentDescription(task.state == Task.DONE ? "已完成，点击恢复" : "标记完成");
+        doneBox.setGravity(Gravity.CENTER);
+        doneBox.setBackground(roundRect(task.state == Task.DONE ? DONE_STRONG : Color.TRANSPARENT,
+                10, stateStrong(task), 2));
+        doneBox.setOnClickListener(v -> {
+            task.state = task.state == Task.DONE ? Task.SEEN : Task.DONE;
+            task.updatedAt = System.currentTimeMillis();
+            if (task.state == Task.DONE) cancelAlarm(task);
+            save();
+            refreshList();
+        });
+        card.addView(doneBox, new LinearLayout.LayoutParams(dp(44), dp(44)));
         return card;
+    }
+
+    private int taskPriority(Task task) {
+        if (task.state == Task.NEW) return 0;
+        if (task.state == Task.SEEN) return 1;
+        if (task.state == Task.DOING) return 2;
+        return 3;
+    }
+
+    private int stateFill(Task task) {
+        if (task.state == Task.NEW) return NEW_FILL;
+        if (task.state == Task.SEEN) return SEEN_FILL;
+        if (task.state == Task.DOING) return DOING_FILL;
+        return DONE_FILL;
+    }
+
+    private int stateStrong(Task task) {
+        if (task.state == Task.NEW) return NEW_STRONG;
+        if (task.state == Task.SEEN) return SEEN_STRONG;
+        if (task.state == Task.DOING) return DOING_STRONG;
+        return DONE_STRONG;
     }
 
     private void openTask(Task task) {
@@ -284,21 +318,40 @@ public class MainActivity extends android.app.Activity {
         code.setText(savedCode);
         form.addView(url, matchWrap());
         form.addView(code, matchWrap());
-        new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("手机与电脑同步")
-                .setMessage("电脑运行 sync-server 后，填写页面显示的地址和同步码。")
+                .setMessage("离线时照常使用；连上同一网络后，可双向同步，也可只上传或只接收。冲突以更新时间较新的状态为准。")
                 .setView(form)
-                .setPositiveButton("立即同步", (dialog, which) -> {
-                    String server = url.getText().toString().trim().replaceAll("/+$", "");
-                    String syncCode = code.getText().toString().trim();
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("sync_url", server).putString("sync_code", syncCode).apply();
-                    syncNow(server, syncCode);
-                })
-                .setNegativeButton("取消", null)
-                .show();
+                .setPositiveButton("双向同步", null)
+                .setNeutralButton("仅接收", null)
+                .setNegativeButton("仅上传", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                startConfiguredSync(url, code, "merge");
+                dialog.dismiss();
+            });
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                startConfiguredSync(url, code, "download");
+                dialog.dismiss();
+            });
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> {
+                startConfiguredSync(url, code, "upload");
+                dialog.dismiss();
+            });
+        });
+        dialog.show();
     }
 
-    private void syncNow(String server, String code) {
+    private void startConfiguredSync(EditText url, EditText code, String mode) {
+        String server = url.getText().toString().trim().replaceAll("/+$", "");
+        String syncCode = code.getText().toString().trim();
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString("sync_url", server).putString("sync_code", syncCode).apply();
+        syncNow(server, syncCode, mode);
+    }
+
+    private void syncNow(String server, String code, String mode) {
         if (!server.startsWith("http://") && !server.startsWith("https://")) {
             Toast.makeText(this, "电脑地址需要以 http:// 或 https:// 开头", Toast.LENGTH_LONG).show();
             return;
@@ -307,7 +360,7 @@ public class MainActivity extends android.app.Activity {
         new Thread(() -> {
             HttpURLConnection connection = null;
             try {
-                JSONObject body = new JSONObject().put("code", code);
+                JSONObject body = new JSONObject().put("code", code).put("mode", mode);
                 JSONArray local = new JSONArray();
                 for (Task task : tasks) local.put(task.toJson());
                 body.put("tasks", local);
@@ -330,11 +383,16 @@ public class MainActivity extends android.app.Activity {
                 List<Task> received = new ArrayList<>();
                 for (int i = 0; i < merged.length(); i++) received.add(Task.fromJson(merged.getJSONObject(i)));
                 runOnUiThread(() -> {
-                    tasks.clear();
-                    tasks.addAll(received);
+                    if ("merge".equals(mode)) {
+                        tasks.clear();
+                        tasks.addAll(received);
+                    } else if ("download".equals(mode)) {
+                        mergeIntoLocal(received);
+                    }
                     save();
                     refreshList();
-                    Toast.makeText(this, "同步完成，共 " + received.size() + " 条记录", Toast.LENGTH_SHORT).show();
+                    String action = "upload".equals(mode) ? "上传完成" : "download".equals(mode) ? "接收完成" : "双向同步完成";
+                    Toast.makeText(this, action + "，同步库共 " + received.size() + " 条记录", Toast.LENGTH_SHORT).show();
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this, "同步失败：" + error.getMessage(), Toast.LENGTH_LONG).show());
@@ -342,6 +400,17 @@ public class MainActivity extends android.app.Activity {
                 if (connection != null) connection.disconnect();
             }
         }).start();
+    }
+
+    private void mergeIntoLocal(List<Task> received) {
+        for (Task remote : received) {
+            int localIndex = -1;
+            for (int i = 0; i < tasks.size(); i++) {
+                if (tasks.get(i).id.equals(remote.id)) { localIndex = i; break; }
+            }
+            if (localIndex < 0) tasks.add(remote);
+            else if (remote.updatedAt > tasks.get(localIndex).updatedAt) tasks.set(localIndex, remote);
+        }
     }
 
     private void requestNotificationPermission() {

@@ -15,10 +15,10 @@
 ## 电脑端同步
 
 ```bash
-SYNC_CODE=123456 node sync-server/server.js
+reminder
 ```
 
-浏览器打开 `http://localhost:8787`。手机和电脑在同一网络时，点击 App 顶部“同步”，填写电脑局域网地址和相同同步码。详细说明见 `sync-server/README.md`。
+该命令会启动服务并打开 `http://localhost:8787`。手机和电脑在同一网络时，点击 App 顶部“同步”，可选择双向同步、仅上传或仅接收。详细说明见 `sync-server/README.md`。
 
 ## 构建
 
