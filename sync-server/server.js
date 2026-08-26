@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const dns = require("node:dns").promises;
 const net = require("node:net");
+const crypto = require("node:crypto");
 
 const port = Number(process.env.PORT || 8787);
 const syncCode = process.env.SYNC_CODE || "123456";
@@ -14,6 +15,7 @@ const kimiModel = process.env.KIMI_MODEL || "k3";
 const summarizing = new Set();
 const summaryQueue = [];
 let summaryWorkerActive = false;
+const authFailures = new Map();
 fs.mkdirSync(dataDir, { recursive: true });
 
 function readTasks() {
@@ -189,6 +191,22 @@ function sendJson(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
+function authorize(request, suppliedCode) {
+  const client = String(request.headers["cf-connecting-ip"] || request.socket.remoteAddress || "unknown");
+  const now = Date.now();
+  const record = authFailures.get(client);
+  if (record && record.blockedUntil > now) return { ok: false, status: 429, error: "同步码错误次数过多，请15分钟后重试" };
+  const expected = Buffer.from(syncCode);
+  const supplied = Buffer.from(String(suppliedCode || ""));
+  const matches = expected.length === supplied.length && crypto.timingSafeEqual(expected, supplied);
+  if (matches) { authFailures.delete(client); return { ok: true }; }
+  const active = record && now - record.windowStarted < 10 * 60_000 ? record : { count: 0, windowStarted: now, blockedUntil: 0 };
+  active.count += 1;
+  if (active.count >= 5) active.blockedUntil = now + 15 * 60_000;
+  authFailures.set(client, active);
+  return { ok: false, status: active.blockedUntil ? 429 : 403, error: active.blockedUntil ? "同步码错误次数过多，请15分钟后重试" : "同步码不正确" };
+}
+
 function readJson(request) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -215,15 +233,15 @@ button{border:0;border-radius:11px;padding:10px 15px;font:700 13px inherit;curso
 .detail{width:min(680px,calc(100% - 28px));max-height:86vh;border:0;border-radius:22px;padding:0;box-shadow:0 22px 70px #15251f55}.detail::backdrop{background:#15251f66;backdrop-filter:blur(3px)}.detail-card{padding:25px;overflow:auto;max-height:86vh;transition:background-color .7s,border-color .7s;border:1px solid transparent}.detail-card h2{margin:7px 0 6px;font-size:23px;overflow-wrap:anywhere}.detail-card .full-summary{white-space:pre-line;font-size:16px;margin:20px 0 0;padding-top:16px;border-top:1px solid #0002}.detail-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:22px}.detail-actions .danger{color:var(--red-strong);margin-left:auto}.detail-card.state-0{background:var(--red);border-color:var(--red-strong)}.detail-card.state-2{background:var(--blue);border-color:var(--blue-strong)}.detail-card.state-1{background:var(--yellow);border-color:var(--yellow-strong)}.detail-card.state-3{background:var(--green);border-color:var(--green-strong)}
 @media(max-width:700px){.hero{grid-template-columns:1fr}h1{font-size:31px}main{padding:24px 16px}.task{grid-template-columns:1fr auto}.task .delete{display:none}}
 </style></head><body><main>
-<div class="brand"><span class="logo">✓</span><div><strong>渐明</strong><div class="muted">电脑端 · 离线优先同步</div><div class="key-help">找不到手机同步密钥？终端输入 <code>reminder code</code></div></div></div>
+<div class="brand"><span class="logo">✓</span><div><strong>渐明</strong><div class="muted">电脑端 · 离线优先同步</div><div class="key-help">找不到手机6位同步码？终端输入 <code>reminder code</code></div></div></div>
 <section class="hero"><div><h1>在手机上记下，<br>在电脑上完成。</h1><p class="muted">两端操作都会保存到这台电脑，并在下次同步时合并。</p></div><div class="capture"><label>快速收件箱</label><textarea id="draft" placeholder="输入要完成的任务…"></textarea><footer><span class="muted">Ctrl + Enter 快速记录</span><button class="primary" id="add">＋ 记录任务</button></footer></div></section>
 <div class="toolbar"><h2 id="summary">任务列表</h2><div class="toolbar-actions"><span class="sync" id="status">正在连接…</span><button id="refresh">接收最新</button></div></div><section class="tasks" id="tasks"></section>
 <dialog class="detail" id="detail"><div class="detail-card" id="detail-card"><div class="muted">任务详情</div><h2 id="detail-text"></h2><p class="muted" id="detail-meta"></p><div class="full-summary" id="detail-summary"></div><div class="detail-actions"><button id="detail-open">打开原链接</button><button id="detail-start">开始任务</button><button id="detail-done">标记完成</button><button class="danger" id="detail-delete">删除</button><button id="detail-close">关闭</button></div></div></dialog>
 </main><script>
 let tasks=[],stableOrder=[],detailTask=null,browserSyncCode=sessionStorage.getItem('reminder-sync-code')||'';const stateNames=["未查看","进行中","已查看","已完成"],priority=[0,2,1,3];
-function getSyncCode(){if(!browserSyncCode){browserSyncCode=(prompt('请输入 reminder 命令显示的同步密钥')||'').trim();if(browserSyncCode)sessionStorage.setItem('reminder-sync-code',browserSyncCode)}if(!browserSyncCode)throw new Error('需要同步密钥');return browserSyncCode}
+function getSyncCode(){if(!browserSyncCode){browserSyncCode=(prompt('请输入 reminder 命令显示的6位同步码')||'').trim();if(browserSyncCode)sessionStorage.setItem('reminder-sync-code',browserSyncCode)}if(!browserSyncCode)throw new Error('需要同步码');return browserSyncCode}
 function mergeDownload(incoming){const map=new Map(tasks.map(t=>[String(t.id),t]));for(const remote of incoming){const local=map.get(String(remote.id));if(!local){map.set(String(remote.id),remote);continue}if(Number(remote.updatedAt||0)>Number(local.updatedAt||0)){if(Number(local.summaryUpdatedAt||0)>Number(remote.summaryUpdatedAt||0))Object.assign(remote,{summary:local.summary,summaryStatus:local.summaryStatus,summaryError:local.summaryError,summaryUpdatedAt:local.summaryUpdatedAt});map.set(String(remote.id),remote)}else if(Number(remote.summaryUpdatedAt||0)>Number(local.summaryUpdatedAt||0))Object.assign(local,{summary:remote.summary,summaryStatus:remote.summaryStatus,summaryError:remote.summaryError,summaryUpdatedAt:remote.summaryUpdatedAt})}tasks=[...map.values()]}
-async function sync(mode='merge'){document.querySelector('#status').textContent=mode==='download'?'正在接收…':'正在同步…';const response=await fetch('/api/sync',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:getSyncCode(),mode,tasks})});if(response.status===403){browserSyncCode='';sessionStorage.removeItem('reminder-sync-code');throw new Error('同步密钥不正确，请重试')}if(!response.ok)throw new Error('同步失败');const incoming=(await response.json()).tasks;if(mode==='download')mergeDownload(incoming);else tasks=incoming;render();document.querySelector('#status').textContent='已同步 · '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});}
+async function sync(mode='merge'){document.querySelector('#status').textContent=mode==='download'?'正在接收…':'正在同步…';const response=await fetch('/api/sync',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:getSyncCode(),mode,tasks})});if(response.status===403){browserSyncCode='';sessionStorage.removeItem('reminder-sync-code');throw new Error('同步码不正确，请重试')}if(response.status===429)throw new Error('错误次数过多，请稍后重试');if(!response.ok)throw new Error('同步失败');const incoming=(await response.json()).tasks;if(mode==='download')mergeDownload(incoming);else tasks=incoming;render();document.querySelector('#status').textContent='已同步 · '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});}
 function orderedTasks(){const active=tasks.filter(t=>!t.deleted);if(!stableOrder.length)stableOrder=active.slice().sort((a,b)=>priority[a.state]-priority[b.state]||b.createdAt-a.createdAt).map(t=>String(t.id));for(const t of active)if(!stableOrder.includes(String(t.id)))stableOrder.unshift(String(t.id));return active.sort((a,b)=>stableOrder.indexOf(String(a.id))-stableOrder.indexOf(String(b.id)))}
 function render(){const active=orderedTasks();document.querySelector('#summary').textContent=active.length?'任务 '+active.length+' 项 · 已完成 '+active.filter(t=>t.state===3).length+' 项':'任务列表';const root=document.querySelector('#tasks');root.innerHTML=active.length?'':'<div class="empty">先在手机或电脑上记录第一件事。</div>';for(const t of active){const el=document.createElement('article');el.className='task state-'+t.state;el.innerHTML='<div class="copy"><h3></h3><p>'+stateNames[t.state]+' · '+new Date(t.createdAt).toLocaleString()+'</p><div class="ai"></div></div><button class="complete" title="'+(t.state===3?'恢复任务':'标记完成')+'">'+(t.state===3?'✓':'')+'</button><button class="delete" title="删除任务">删除</button>';el.querySelector('h3').textContent=t.text.split('\\n')[0];const ai=el.querySelector('.ai');if(t.summary){ai.className='ai ai-summary';ai.textContent=t.summary}else if(t.summaryStatus==='pending'){ai.className='ai ai-status';ai.textContent='Kimi 正在阅读链接…'}else if(t.summaryStatus==='error'){ai.className='ai ai-status error';ai.textContent='摘要暂时失败，将在下次同步重试'}el.querySelector('.copy').onclick=()=>showDetail(t);el.querySelector('.complete').onclick=()=>{t.state=t.state===3?2:3;t.updatedAt=Date.now();el.className='task state-'+t.state;setTimeout(()=>sync('upload'),720)};el.querySelector('.delete').onclick=async()=>{if(confirm('删除这项任务？')){t.deleted=true;t.updatedAt=Date.now();await sync('upload')}};root.appendChild(el)}}
 function updateDetail(){const t=detailTask,card=document.querySelector('#detail-card');card.className='detail-card state-'+t.state;document.querySelector('#detail-meta').textContent=stateNames[t.state]+' · '+new Date(t.createdAt).toLocaleString();document.querySelector('#detail-start').textContent=t.state===1?'进行中':t.state===3?'恢复任务':'开始任务';document.querySelector('#detail-done').textContent=t.state===3?'恢复为未完成':'标记完成'}
@@ -241,7 +259,8 @@ http.createServer(async (request, response) => {
   if (request.method === "POST" && request.url === "/api/sync") {
     try {
       const body = await readJson(request);
-      if (String(body.code || "") !== syncCode) return sendJson(response, 403, { error: "同步码不正确" });
+      const auth = authorize(request, body.code);
+      if (!auth.ok) return sendJson(response, auth.status, { error: auth.error });
       const mode = ["upload", "download", "merge"].includes(body.mode) ? body.mode : "merge";
       const current = readTasks();
       const merged = mode === "download" ? current : mergeTasks(current, Array.isArray(body.tasks) ? body.tasks : []);

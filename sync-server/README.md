@@ -6,14 +6,14 @@
 reminder internet
 ```
 
-首次运行会自动下载 Cloudflare 的 `cloudflared` 连接组件，然后显示随机 HTTPS 公网地址和高强度同步密钥。手机与电脑无需处于同一网段。
+首次运行会自动下载 Cloudflare 的 `cloudflared` 连接组件，然后显示随机 HTTPS 公网地址和6位数字同步码。手机与电脑无需处于同一网段。
 
 ```text
 手机公网同步地址：https://随机地址.trycloudflare.com
-同步密钥：一串随机字符
+6位同步码：123456
 ```
 
-把这两项粘贴到手机 App 的同步对话框即可。电脑网页仍在 `http://localhost:8787` 打开，首次使用也会询问同步密钥，网页源码不包含密钥。
+把这两项粘贴到手机 App 的同步对话框即可。电脑网页仍在 `http://localhost:8787` 打开，首次使用也会询问同步码，网页源码不包含同步码。公网接口同一来源连续输错5次后会暂停15分钟。
 
 如果终端已经关闭或忘记同步信息，随时输入：
 
@@ -25,7 +25,7 @@ reminder code
 
 ```bash
 reminder status
-reminder code       # 显示当前手机同步地址和密钥
+reminder code       # 显示当前手机同步地址和6位同步码
 reminder stop
 reminder            # 仅使用同一局域网时
 ```
@@ -36,7 +36,7 @@ reminder            # 仅使用同一局域网时
 SYNC_CODE=654321 node sync-server/server.js
 ```
 
-手机在任意网络下点击“同步”，填写 `reminder internet` 输出的地址和密钥。可选择：
+手机在任意网络下点击“同步”，填写 `reminder internet` 输出的地址和6位同步码。可选择：
 
 - 双向同步：两端按 `updatedAt` 取较新的任务状态
 - 仅上传：只把手机的新增和更新合入电脑同步库

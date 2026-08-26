@@ -31,9 +31,9 @@ show_credentials() {
     if [[ -n "$lan_ip" ]]; then echo "手机局域网地址：http://$lan_ip:$PORT"; fi
   fi
   if [[ -s "$ACTIVE_CODE_FILE" ]]; then
-    echo "同步密钥：$(tr -d '\r\n' < "$ACTIVE_CODE_FILE")"
+    echo "6位同步码：$(tr -d '\r\n' < "$ACTIVE_CODE_FILE")"
   else
-    echo "尚未生成同步密钥，请先运行 reminder internet。"
+    echo "尚未生成同步码，请先运行 reminder internet。"
   fi
 }
 
@@ -79,9 +79,10 @@ esac
 
 if [[ "$MODE" == "internet" ]]; then
   mkdir -p "$(dirname "$INTERNET_CODE_FILE")" "$(dirname "$TUNNEL_BINARY")"
-  if [[ ! -s "$INTERNET_CODE_FILE" ]]; then
+  if [[ ! -s "$INTERNET_CODE_FILE" ]] || ! grep -Eq '^[0-9]{6}$' "$INTERNET_CODE_FILE"; then
     umask 077
-    openssl rand -hex 24 > "$INTERNET_CODE_FILE"
+    random_hex="$(openssl rand -hex 4)"
+    printf '%06d' "$((16#$random_hex % 900000 + 100000))" > "$INTERNET_CODE_FILE"
   fi
   SYNC_CODE="$(tr -d '\r\n' < "$INTERNET_CODE_FILE")"
   if [[ ! -x "$TUNNEL_BINARY" ]]; then
@@ -158,7 +159,7 @@ if [[ "$MODE" == "internet" ]]; then
 elif [[ -n "$lan_ip" ]]; then
   echo "手机局域网地址：http://$lan_ip:$PORT"
 fi
-echo "同步密钥：$SYNC_CODE"
+echo "6位同步码：$SYNC_CODE"
 
 if command -v xdg-open >/dev/null 2>&1; then
   xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &

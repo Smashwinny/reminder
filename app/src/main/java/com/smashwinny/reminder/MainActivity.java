@@ -446,38 +446,39 @@ public class MainActivity extends android.app.Activity {
         url.setSingleLine(true);
         url.setText(savedUrl);
         EditText code = new EditText(this);
-        code.setHint("同步密钥（从 reminder internet 复制）");
+        code.setHint("6位同步码（从 reminder code 查看）");
         code.setSingleLine(true);
         code.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         code.setText(savedCode);
         form.addView(url, matchWrap());
         form.addView(code, matchWrap());
         LinearLayout codeActions = row();
-        Button revealCode = smallButton("显示密钥");
-        Button copyCode = smallButton("复制密钥");
+        Button revealCode = smallButton("显示同步码");
+        Button copyCode = smallButton("复制同步码");
         codeActions.addView(revealCode, new LinearLayout.LayoutParams(0, dp(40), 1));
         LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(0, dp(40), 1);
         copyLp.setMargins(dp(8), 0, 0, 0);
         codeActions.addView(copyCode, copyLp);
         form.addView(codeActions, matchWrap());
+        final boolean[] codeHidden = {true};
         revealCode.setOnClickListener(v -> {
-            boolean hidden = (code.getInputType() & InputType.TYPE_TEXT_VARIATION_PASSWORD) != 0;
-            code.setInputType(InputType.TYPE_CLASS_TEXT | (hidden ? InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD : InputType.TYPE_TEXT_VARIATION_PASSWORD));
+            codeHidden[0] = !codeHidden[0];
+            code.setInputType(InputType.TYPE_CLASS_TEXT | (codeHidden[0] ? InputType.TYPE_TEXT_VARIATION_PASSWORD : InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD));
             code.setSelection(code.length());
-            revealCode.setText(hidden ? "隐藏密钥" : "显示密钥");
+            revealCode.setText(codeHidden[0] ? "显示同步码" : "隐藏同步码");
         });
         copyCode.setOnClickListener(v -> {
             String value = code.getText().toString();
             if (value.isEmpty()) {
-                Toast.makeText(this, "当前还没有保存同步密钥", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "当前还没有保存同步码", Toast.LENGTH_SHORT).show();
                 return;
             }
-            ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("渐明同步密钥", value));
-            Toast.makeText(this, "同步密钥已复制", Toast.LENGTH_SHORT).show();
+            ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("渐明同步码", value));
+            Toast.makeText(this, "同步码已复制", Toast.LENGTH_SHORT).show();
         });
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("手机与电脑同步")
-                .setMessage("找不到地址或密钥？在电脑终端输入 reminder code 可随时重新查看。手机在任意 Wi-Fi 或蜂窝网络都能同步。")
+                .setMessage("找不到6位同步码？在电脑终端输入 reminder code 可随时重新查看。手机在任意 Wi-Fi 或蜂窝网络都能同步。")
                 .setView(form)
                 .setPositiveButton("双向同步", null)
                 .setNeutralButton("仅接收", null)
@@ -504,7 +505,7 @@ public class MainActivity extends android.app.Activity {
         String server = url.getText().toString().trim().replaceAll("/+$", "");
         String syncCode = code.getText().toString().trim();
         if (server.isEmpty() || syncCode.isEmpty()) {
-            Toast.makeText(this, "请填写同步地址和同步密钥", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "请填写同步地址和6位同步码", Toast.LENGTH_LONG).show();
             return;
         }
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
