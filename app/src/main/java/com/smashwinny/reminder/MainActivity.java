@@ -16,6 +16,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -439,18 +440,19 @@ public class MainActivity extends android.app.Activity {
         LinearLayout form = column();
         form.setPadding(dp(22), 0, dp(22), 0);
         EditText url = new EditText(this);
-        url.setHint("电脑地址，例如 http://192.168.1.8:8787");
+        url.setHint("同步地址，例如 https://xxx.trycloudflare.com");
         url.setSingleLine(true);
         url.setText(savedUrl);
         EditText code = new EditText(this);
-        code.setHint("同步码，例如 123456");
+        code.setHint("同步密钥（从 reminder internet 复制）");
         code.setSingleLine(true);
+        code.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         code.setText(savedCode);
         form.addView(url, matchWrap());
         form.addView(code, matchWrap());
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("手机与电脑同步")
-                .setMessage("离线时照常使用；连上同一网络后，可双向同步，也可只上传或只接收。冲突以更新时间较新的状态为准。")
+                .setMessage("电脑运行 reminder internet 后，手机在任意 Wi-Fi 或蜂窝网络都能同步。离线时仍可照常记录。")
                 .setView(form)
                 .setPositiveButton("双向同步", null)
                 .setNeutralButton("仅接收", null)
@@ -476,6 +478,10 @@ public class MainActivity extends android.app.Activity {
     private void startConfiguredSync(EditText url, EditText code, String mode) {
         String server = url.getText().toString().trim().replaceAll("/+$", "");
         String syncCode = code.getText().toString().trim();
+        if (server.isEmpty() || syncCode.isEmpty()) {
+            Toast.makeText(this, "请填写同步地址和同步密钥", Toast.LENGTH_LONG).show();
+            return;
+        }
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString("sync_url", server).putString("sync_code", syncCode).apply();
         syncNow(server, syncCode, mode);
@@ -496,8 +502,8 @@ public class MainActivity extends android.app.Activity {
                 body.put("tasks", local);
                 byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
                 connection = (HttpURLConnection) new URL(server + "/api/sync").openConnection();
-                connection.setConnectTimeout(6000);
-                connection.setReadTimeout(8000);
+                connection.setConnectTimeout(12000);
+                connection.setReadTimeout(20000);
                 connection.setRequestMethod("POST");
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
                 connection.setDoOutput(true);

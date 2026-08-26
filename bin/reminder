@@ -8,6 +8,12 @@ RUNTIME_DIR="$PROJECT_ROOT/tmp"
 PID_FILE="$RUNTIME_DIR/reminder-sync.pid"
 LOG_FILE="$RUNTIME_DIR/reminder-sync.log"
 SYSTEMD_UNIT="reminder-sync.service"
+TUNNEL_UNIT="reminder-tunnel.service"
+TUNNEL_BINARY="$RUNTIME_DIR/bin/cloudflared"
+TUNNEL_LOG="$RUNTIME_DIR/reminder-tunnel.log"
+TUNNEL_URL_FILE="$RUNTIME_DIR/reminder-tunnel.url"
+ACTIVE_CODE_FILE="$RUNTIME_DIR/reminder-active-code"
+INTERNET_CODE_FILE="$PROJECT_ROOT/sync-server/data/internet-sync-code"
 PORT="${PORT:-8787}"
 SYNC_CODE="${SYNC_CODE:-654321}"
 
@@ -18,6 +24,10 @@ server_ready() {
 }
 
 stop_server() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet "$TUNNEL_UNIT"; then
+    systemctl --user stop "$TUNNEL_UNIT"
+  fi
+  rm -f "$TUNNEL_URL_FILE"
   if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet "$SYSTEMD_UNIT"; then
     systemctl --user stop "$SYSTEMD_UNIT"
     echo "渐明同步服务已停止。"
@@ -39,11 +49,39 @@ case "${1:-start}" in
   stop) stop_server; exit 0 ;;
   status)
     if server_ready; then echo "渐明同步服务正在运行：http://localhost:$PORT"; else echo "渐明同步服务未运行。"; fi
+    if [[ -s "$TUNNEL_URL_FILE" ]] && systemctl --user is-active --quiet "$TUNNEL_UNIT" 2>/dev/null; then
+      echo "公网同步地址：$(tr -d '\r\n' < "$TUNNEL_URL_FILE")"
+    else
+      echo "公网同步未启动。运行 reminder internet 开启。"
+    fi
     exit 0
     ;;
-  start|open) ;;
-  *) echo "用法：reminder [start|open|status|stop]"; exit 2 ;;
+  start|open) MODE="local" ;;
+  internet) MODE="internet" ;;
+  *) echo "用法：reminder [start|open|internet|status|stop]"; exit 2 ;;
 esac
+
+if [[ "$MODE" == "internet" ]]; then
+  mkdir -p "$(dirname "$INTERNET_CODE_FILE")" "$(dirname "$TUNNEL_BINARY")"
+  if [[ ! -s "$INTERNET_CODE_FILE" ]]; then
+    umask 077
+    openssl rand -hex 24 > "$INTERNET_CODE_FILE"
+  fi
+  SYNC_CODE="$(tr -d '\r\n' < "$INTERNET_CODE_FILE")"
+  if [[ ! -x "$TUNNEL_BINARY" ]]; then
+    echo "首次使用，正在安装公网连接组件…"
+    curl -fL --progress-bar -o "$TUNNEL_BINARY.next" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+    chmod 700 "$TUNNEL_BINARY.next"
+    mv "$TUNNEL_BINARY.next" "$TUNNEL_BINARY"
+  fi
+  if server_ready; then
+    systemctl --user stop "$SYSTEMD_UNIT" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      server_ready || break
+      sleep 0.2
+    done
+  fi
+fi
 
 if ! server_ready; then
   node_bin="$(command -v node)"
@@ -68,10 +106,43 @@ if ! server_ready; then
   exit 1
 fi
 
+umask 077
+printf '%s' "$SYNC_CODE" > "$ACTIVE_CODE_FILE"
+
+if [[ "$MODE" == "internet" ]]; then
+  if ! systemctl --user is-active --quiet "$TUNNEL_UNIT" 2>/dev/null; then
+    : > "$TUNNEL_LOG"
+    rm -f "$TUNNEL_URL_FILE"
+    systemctl --user reset-failed "$TUNNEL_UNIT" >/dev/null 2>&1 || true
+    systemd-run --user --quiet --collect --unit=reminder-tunnel \
+      --property="WorkingDirectory=$PROJECT_ROOT" \
+      --property="StandardOutput=append:$TUNNEL_LOG" \
+      --property="StandardError=append:$TUNNEL_LOG" \
+      "$TUNNEL_BINARY" tunnel --no-autoupdate --url "http://127.0.0.1:$PORT"
+  fi
+  for _ in $(seq 1 30); do
+    public_url="$(grep -Eo 'https://[-a-z0-9]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -n 1 || true)"
+    if [[ -n "$public_url" ]]; then
+      printf '%s' "$public_url" > "$TUNNEL_URL_FILE"
+      break
+    fi
+    sleep 1
+  done
+  if [[ ! -s "$TUNNEL_URL_FILE" ]]; then
+    echo "公网连接启动失败，请查看 $TUNNEL_LOG" >&2
+    exit 1
+  fi
+fi
+
 lan_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -Ev '^(127\.|172\.|$)' | head -n 1 || true)"
 echo "渐明同步页：http://localhost:$PORT"
-if [[ -n "$lan_ip" ]]; then echo "手机同步地址：http://$lan_ip:$PORT"; fi
-echo "同步码：$SYNC_CODE"
+if [[ "$MODE" == "internet" ]]; then
+  echo "手机公网同步地址：$(tr -d '\r\n' < "$TUNNEL_URL_FILE")"
+  echo "任意 Wi-Fi 或蜂窝网络均可同步。"
+elif [[ -n "$lan_ip" ]]; then
+  echo "手机局域网地址：http://$lan_ip:$PORT"
+fi
+echo "同步密钥：$SYNC_CODE"
 
 if command -v xdg-open >/dev/null 2>&1; then
   xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &
