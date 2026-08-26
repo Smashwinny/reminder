@@ -208,6 +208,20 @@ public class MainActivity extends android.app.Activity {
         TextView metaView = text(meta, 12, MUTED, Typeface.NORMAL);
         metaView.setPadding(0, dp(6), 0, 0);
         copy.addView(metaView);
+        if (task.summary != null && !task.summary.isEmpty()) {
+            TextView summaryView = text(task.summary, 13, INK, Typeface.NORMAL);
+            summaryView.setPadding(0, dp(7), 0, 0);
+            summaryView.setMaxLines(4);
+            copy.addView(summaryView);
+        } else if ("pending".equals(task.summaryStatus)) {
+            TextView aiStatus = text("Kimi 正在阅读链接，稍后同步即可看到摘要", 12, MUTED, Typeface.NORMAL);
+            aiStatus.setPadding(0, dp(6), 0, 0);
+            copy.addView(aiStatus);
+        } else if ("error".equals(task.summaryStatus)) {
+            TextView aiStatus = text("摘要暂时失败，下次同步会重试", 12, NEW_STRONG, Typeface.NORMAL);
+            aiStatus.setPadding(0, dp(6), 0, 0);
+            copy.addView(aiStatus);
+        }
         card.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         TextView doneBox = text(task.state == Task.DONE ? "✓" : "", 21,
@@ -409,8 +423,23 @@ public class MainActivity extends android.app.Activity {
                 if (tasks.get(i).id.equals(remote.id)) { localIndex = i; break; }
             }
             if (localIndex < 0) tasks.add(remote);
-            else if (remote.updatedAt > tasks.get(localIndex).updatedAt) tasks.set(localIndex, remote);
+            else {
+                Task local = tasks.get(localIndex);
+                if (remote.updatedAt > local.updatedAt) {
+                    if (local.summaryUpdatedAt > remote.summaryUpdatedAt) copySummary(local, remote);
+                    tasks.set(localIndex, remote);
+                } else if (remote.summaryUpdatedAt > local.summaryUpdatedAt) {
+                    copySummary(remote, local);
+                }
+            }
         }
+    }
+
+    private void copySummary(Task source, Task target) {
+        target.summary = source.summary;
+        target.summaryStatus = source.summaryStatus;
+        target.summaryError = source.summaryError;
+        target.summaryUpdatedAt = source.summaryUpdatedAt;
     }
 
     private void requestNotificationPermission() {

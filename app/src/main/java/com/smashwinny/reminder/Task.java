@@ -16,6 +16,10 @@ final class Task {
     long reminderAt;
     int state;
     boolean deleted;
+    String summary;
+    String summaryStatus;
+    String summaryError;
+    long summaryUpdatedAt;
 
     Task(String id, String text, long createdAt) {
         this.id = id;
@@ -29,7 +33,11 @@ final class Task {
         return new JSONObject()
                 .put("id", id).put("text", text).put("createdAt", createdAt)
                 .put("updatedAt", updatedAt).put("reminderAt", reminderAt)
-                .put("state", state).put("deleted", deleted);
+                .put("state", state).put("deleted", deleted)
+                .put("summary", summary == null ? "" : summary)
+                .put("summaryStatus", summaryStatus == null ? "" : summaryStatus)
+                .put("summaryError", summaryError == null ? "" : summaryError)
+                .put("summaryUpdatedAt", summaryUpdatedAt);
     }
 
     static Task fromJson(JSONObject json) throws JSONException {
@@ -38,6 +46,10 @@ final class Task {
         task.reminderAt = json.optLong("reminderAt");
         task.state = json.optInt("state");
         task.deleted = json.optBoolean("deleted");
+        task.summary = json.optString("summary");
+        task.summaryStatus = json.optString("summaryStatus");
+        task.summaryError = json.optString("summaryError");
+        task.summaryUpdatedAt = json.optLong("summaryUpdatedAt");
         return task;
     }
 }
