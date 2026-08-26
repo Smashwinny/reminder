@@ -1,6 +1,7 @@
 package com.smashwinny.reminder;
 
 import android.Manifest;
+import android.animation.ValueAnimator;
 import android.app.AlarmManager;
 import android.app.AlertDialog;
 import android.app.DatePickerDialog;
@@ -12,6 +13,7 @@ import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -59,6 +61,7 @@ public class MainActivity extends android.app.Activity {
     private static final int DONE_STRONG = Color.rgb(43, 126, 70);
     private static final String PREFS = "tasks_v1";
     private final List<Task> tasks = new ArrayList<>();
+    private final List<String> stableOrder = new ArrayList<>();
     private LinearLayout list;
     private TextView summary;
     private EditText input;
@@ -133,7 +136,7 @@ public class MainActivity extends android.app.Activity {
         for (int i = 0; i < labels.length; i++) {
             final int mode = i;
             Button button = smallButton(labels[i]);
-            button.setOnClickListener(v -> { sortMode = mode; refreshList(); });
+            button.setOnClickListener(v -> { sortMode = mode; refreshList(true); });
             LinearLayout.LayoutParams sortLp = new LinearLayout.LayoutParams(0, dp(40), 1);
             if (i > 0) sortLp.setMargins(dp(7), 0, 0, 0);
             sorts.addView(button, sortLp);
@@ -143,7 +146,7 @@ public class MainActivity extends android.app.Activity {
         list = column();
         root.addView(list, matchWrap());
         setContentView(scroll);
-        refreshList();
+        refreshList(true);
     }
 
     private void addTask() {
@@ -153,16 +156,31 @@ public class MainActivity extends android.app.Activity {
         tasks.add(0, new Task(UUID.randomUUID().toString(), value, now));
         input.setText("");
         save();
-        refreshList();
+        refreshList(true);
     }
 
-    private void refreshList() {
+    private void refreshList() { refreshList(false); }
+
+    private void refreshList(boolean reorder) {
         list.removeAllViews();
         List<Task> shown = new ArrayList<>();
         for (Task task : tasks) if (!task.deleted) shown.add(task);
-        if (sortMode == 0) Collections.sort(shown, (a, b) -> Integer.compare(taskPriority(a), taskPriority(b)));
-        else if (sortMode == 1) Collections.sort(shown, (a, b) -> Long.compare(b.createdAt, a.createdAt));
-        else Collections.sort(shown, (a, b) -> Long.compare(a.reminderAt == 0 ? Long.MAX_VALUE : a.reminderAt, b.reminderAt == 0 ? Long.MAX_VALUE : b.reminderAt));
+        if (reorder || stableOrder.isEmpty()) {
+            if (sortMode == 0) Collections.sort(shown, (a, b) -> Integer.compare(taskPriority(a), taskPriority(b)));
+            else if (sortMode == 1) Collections.sort(shown, (a, b) -> Long.compare(b.createdAt, a.createdAt));
+            else Collections.sort(shown, (a, b) -> Long.compare(a.reminderAt == 0 ? Long.MAX_VALUE : a.reminderAt, b.reminderAt == 0 ? Long.MAX_VALUE : b.reminderAt));
+            stableOrder.clear();
+            for (Task task : shown) stableOrder.add(task.id);
+        } else {
+            Collections.sort(shown, (a, b) -> {
+                int ai = stableOrder.indexOf(a.id), bi = stableOrder.indexOf(b.id);
+                if (ai < 0 && bi < 0) return Long.compare(b.createdAt, a.createdAt);
+                if (ai < 0) return -1;
+                if (bi < 0) return 1;
+                return Integer.compare(ai, bi);
+            });
+            for (Task task : shown) if (!stableOrder.contains(task.id)) stableOrder.add(task.id);
+        }
         int done = 0;
         for (Task task : shown) if (task.state == Task.DONE) done++;
         summary.setText(shown.isEmpty() ? "任务列表" : "任务 " + shown.size() + " 项  ·  已完成 " + done + " 项");
@@ -231,11 +249,21 @@ public class MainActivity extends android.app.Activity {
         doneBox.setBackground(roundRect(task.state == Task.DONE ? DONE_STRONG : Color.TRANSPARENT,
                 10, stateStrong(task), 2));
         doneBox.setOnClickListener(v -> {
+            int fromFill = stateFill(task);
             task.state = task.state == Task.DONE ? Task.SEEN : Task.DONE;
             task.updatedAt = System.currentTimeMillis();
             if (task.state == Task.DONE) cancelAlarm(task);
             save();
-            refreshList();
+            int toFill = stateFill(task), toStrong = stateStrong(task);
+            doneBox.setText(task.state == Task.DONE ? "✓" : "");
+            doneBox.setTextColor(task.state == Task.DONE ? Color.WHITE : toStrong);
+            doneBox.setContentDescription(task.state == Task.DONE ? "已完成，点击恢复" : "标记完成");
+            doneBox.setBackground(roundRect(task.state == Task.DONE ? DONE_STRONG : Color.TRANSPARENT, 10, toStrong, 2));
+            ValueAnimator animator = ValueAnimator.ofArgb(fromFill, toFill);
+            animator.setDuration(700);
+            animator.addUpdateListener(value -> card.setBackground(roundRect((int) value.getAnimatedValue(), 16, toStrong, 1)));
+            animator.start();
+            card.postDelayed(() -> refreshList(false), 720);
         });
         card.addView(doneBox, new LinearLayout.LayoutParams(dp(44), dp(44)));
         return card;
@@ -263,19 +291,107 @@ public class MainActivity extends android.app.Activity {
     }
 
     private void openTask(Task task) {
-        if (task.state == Task.NEW) { task.state = Task.SEEN; task.updatedAt = System.currentTimeMillis(); save(); refreshList(); }
-        String[] actions = task.state == Task.DONE
-                ? new String[]{"恢复任务", "删除任务"}
-                : new String[]{"开始任务", "设置提醒", "完成任务", "删除任务"};
-        new AlertDialog.Builder(this).setTitle(task.text).setItems(actions, (dialog, which) -> {
-            if (task.state == Task.DONE) {
-                if (which == 0) task.state = Task.SEEN; else removeTask(task);
-            } else if (which == 0) task.state = Task.DOING;
-            else if (which == 1) chooseReminder(task);
-            else if (which == 2) { task.state = Task.DONE; cancelAlarm(task); }
-            else removeTask(task);
-            task.updatedAt = System.currentTimeMillis(); save(); refreshList();
-        }).setNegativeButton("关闭", null).show();
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout panel = column();
+        panel.setPadding(dp(22), dp(20), dp(22), dp(12));
+        panel.setBackground(roundRect(stateFill(task), 18, stateStrong(task), 1));
+        scroll.addView(panel);
+
+        TextView eyebrow = text("任务详情", 12, stateStrong(task), Typeface.BOLD);
+        panel.addView(eyebrow);
+        TextView fullText = text(task.text, 20, INK, Typeface.BOLD);
+        fullText.setTextIsSelectable(true);
+        fullText.setPadding(0, dp(10), 0, dp(8));
+        panel.addView(fullText);
+        TextView stateLabel = text(taskStateName(task) + " · " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(task.createdAt), 13, MUTED, Typeface.NORMAL);
+        panel.addView(stateLabel);
+
+        if (task.summary != null && !task.summary.isEmpty()) {
+            TextView aiLabel = text("Kimi 摘要", 12, BRAND, Typeface.BOLD);
+            aiLabel.setPadding(0, dp(20), 0, dp(7));
+            panel.addView(aiLabel);
+            TextView fullSummary = text(task.summary, 16, INK, Typeface.NORMAL);
+            fullSummary.setTextIsSelectable(true);
+            fullSummary.setLineSpacing(dp(2), 1.08f);
+            panel.addView(fullSummary);
+        }
+        if (task.reminderAt > 0) {
+            TextView reminder = text("提醒时间  " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(task.reminderAt), 13, BRAND, Typeface.BOLD);
+            reminder.setPadding(0, dp(18), 0, 0);
+            panel.addView(reminder);
+        }
+        if (onlyUrl(task.text)) {
+            Button open = smallButton("打开原链接");
+            LinearLayout.LayoutParams openLp = matchWrap();
+            openLp.setMargins(0, dp(18), 0, 0);
+            panel.addView(open, openLp);
+            open.setOnClickListener(v -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(task.text.trim()))));
+        }
+        Button complete = smallButton(task.state == Task.DONE ? "恢复为未完成" : "标记完成");
+        LinearLayout.LayoutParams completeLp = matchWrap();
+        completeLp.setMargins(0, dp(12), 0, 0);
+        panel.addView(complete, completeLp);
+        Button delete = smallButton("删除任务");
+        delete.setTextColor(NEW_STRONG);
+        LinearLayout.LayoutParams deleteLp = matchWrap();
+        deleteLp.setMargins(0, dp(12), 0, 0);
+        panel.addView(delete, deleteLp);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(scroll)
+                .setPositiveButton(task.state == Task.DONE ? "恢复任务" : "开始任务", null)
+                .setNeutralButton(task.state == Task.DONE ? null : "设置提醒", null)
+                .setNegativeButton("关闭", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            if (task.state == Task.NEW) panel.postDelayed(() -> {
+                if (dialog.isShowing() && task.state == Task.NEW) changeStateInDetail(task, Task.SEEN, panel, eyebrow, stateLabel);
+            }, 450);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                int next = task.state == Task.DONE ? Task.SEEN : Task.DOING;
+                changeStateInDetail(task, next, panel, eyebrow, stateLabel);
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setText(next == Task.DOING ? "进行中" : "开始任务");
+                complete.setText("标记完成");
+            });
+            if (task.state != Task.DONE) dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> chooseReminder(task));
+            complete.setOnClickListener(v -> {
+                int next = task.state == Task.DONE ? Task.SEEN : Task.DONE;
+                changeStateInDetail(task, next, panel, eyebrow, stateLabel);
+                complete.setText(next == Task.DONE ? "恢复为未完成" : "标记完成");
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setText(next == Task.DONE ? "恢复任务" : "开始任务");
+            });
+            delete.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("删除这项任务？")
+                    .setMessage("删除后会在下次同步时从其他设备移除。")
+                    .setPositiveButton("确认删除", (confirm, which) -> { removeTask(task); save(); dialog.dismiss(); })
+                    .setNegativeButton("取消", null).show());
+        });
+        dialog.setOnDismissListener(ignored -> refreshList(false));
+        dialog.show();
+    }
+
+    private void changeStateInDetail(Task task, int nextState, LinearLayout panel, TextView eyebrow, TextView stateLabel) {
+        if (task.state == nextState) return;
+        int fromFill = stateFill(task);
+        task.state = nextState;
+        task.updatedAt = System.currentTimeMillis();
+        if (nextState == Task.DONE) cancelAlarm(task);
+        save();
+        int toFill = stateFill(task), toStrong = stateStrong(task);
+        ValueAnimator animator = ValueAnimator.ofArgb(fromFill, toFill);
+        animator.setDuration(700);
+        animator.addUpdateListener(value -> panel.setBackground(roundRect((int) value.getAnimatedValue(), 18, toStrong, 1)));
+        animator.start();
+        eyebrow.setTextColor(toStrong);
+        stateLabel.setText(taskStateName(task) + " · " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(task.createdAt));
+    }
+
+    private String taskStateName(Task task) {
+        return new String[]{"未查看", "进行中", "已查看", "已完成"}[task.state];
+    }
+
+    private boolean onlyUrl(String value) {
+        String trimmed = value == null ? "" : value.trim();
+        return !trimmed.contains(" ") && !trimmed.contains("\n") && (trimmed.startsWith("http://") || trimmed.startsWith("https://"));
     }
 
     private void removeTask(Task task) { cancelAlarm(task); task.deleted = true; task.updatedAt = System.currentTimeMillis(); }
