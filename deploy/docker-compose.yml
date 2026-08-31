@@ -1,0 +1,41 @@
+name: reminder
+
+services:
+  app:
+    build:
+      context: ../sync-server
+    image: reminder-sync:local
+    container_name: reminder_app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      PORT: 8787
+      KIMI_API_KEY_FILE: /run/secrets/kimi_api_key
+    volumes:
+      - reminder_data:/data
+      - ./kimi.key:/run/secrets/kimi_api_key:ro
+    ports:
+      - "127.0.0.1:${REMINDER_PORT:-8787}:8787"
+    networks:
+      - reminder_internal
+    mem_limit: 384m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8787/api/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  reminder_internal:
+    name: reminder_internal
+
+volumes:
+  reminder_data:
+    name: reminder_data

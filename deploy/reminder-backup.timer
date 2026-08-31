@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Reminder backup
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=reminder-backup.service
+
+[Install]
+WantedBy=timers.target

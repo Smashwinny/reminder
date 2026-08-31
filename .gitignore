@@ -4,4 +4,7 @@ local.properties
 **/build/
 tmp/
 sync-server/data/
+backups/
+deploy/.env
+deploy/kimi.key
 *.iml

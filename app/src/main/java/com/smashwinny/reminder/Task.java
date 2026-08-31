@@ -20,6 +20,11 @@ final class Task {
     String summaryStatus;
     String summaryError;
     long summaryUpdatedAt;
+    int viewCount;
+    long lastViewedAt;
+    String attachmentUri;
+    String attachmentType;
+    String attachmentName;
 
     Task(String id, String text, long createdAt) {
         this.id = id;
@@ -37,7 +42,11 @@ final class Task {
                 .put("summary", summary == null ? "" : summary)
                 .put("summaryStatus", summaryStatus == null ? "" : summaryStatus)
                 .put("summaryError", summaryError == null ? "" : summaryError)
-                .put("summaryUpdatedAt", summaryUpdatedAt);
+                .put("summaryUpdatedAt", summaryUpdatedAt)
+                .put("viewCount", viewCount).put("lastViewedAt", lastViewedAt)
+                .put("attachmentUri", attachmentUri == null ? "" : attachmentUri)
+                .put("attachmentType", attachmentType == null ? "" : attachmentType)
+                .put("attachmentName", attachmentName == null ? "" : attachmentName);
     }
 
     static Task fromJson(JSONObject json) throws JSONException {
@@ -50,6 +59,11 @@ final class Task {
         task.summaryStatus = json.optString("summaryStatus");
         task.summaryError = json.optString("summaryError");
         task.summaryUpdatedAt = json.optLong("summaryUpdatedAt");
+        task.viewCount = Math.max(0, Math.min(4, json.optInt("viewCount", task.state == SEEN ? 1 : 0)));
+        task.lastViewedAt = json.optLong("lastViewedAt", task.viewCount > 0 ? task.updatedAt : 0);
+        task.attachmentUri = json.optString("attachmentUri");
+        task.attachmentType = json.optString("attachmentType");
+        task.attachmentName = json.optString("attachmentName");
         return task;
     }
 }

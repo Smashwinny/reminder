@@ -14,17 +14,146 @@ TUNNEL_LOG="$RUNTIME_DIR/reminder-tunnel.log"
 TUNNEL_URL_FILE="$RUNTIME_DIR/reminder-tunnel.url"
 ACTIVE_CODE_FILE="$RUNTIME_DIR/reminder-active-code"
 INTERNET_CODE_FILE="$PROJECT_ROOT/sync-server/data/internet-sync-code"
+TUNNEL_TOKEN_FILE="$PROJECT_ROOT/sync-server/data/cloudflare-tunnel-token"
+TUNNEL_HOSTNAME_FILE="$PROJECT_ROOT/sync-server/data/cloudflare-tunnel-hostname"
+DATA_FILE="$PROJECT_ROOT/sync-server/data/tasks.json"
+BACKUP_DIR="$PROJECT_ROOT/sync-server/data/backups"
 PORT="${PORT:-8787}"
 SYNC_CODE="${SYNC_CODE:-654321}"
 
 mkdir -p "$RUNTIME_DIR"
+
+make_backup() {
+  mkdir -p "$BACKUP_DIR"
+  if [[ ! -s "$DATA_FILE" ]]; then
+    echo "当前还没有可备份的任务数据。" >&2
+    return 1
+  fi
+  stamp="$(date '+%Y%m%d-%H%M%S')"
+  destination="$BACKUP_DIR/tasks-manual-$stamp.json"
+  cp -- "$DATA_FILE" "$destination"
+  chmod 600 "$destination"
+  echo "任务备份已保存：$destination"
+}
+
+list_backups() {
+  if [[ ! -d "$BACKUP_DIR" ]] || ! find "$BACKUP_DIR" -maxdepth 1 -type f -name 'tasks-*.json' -print -quit | grep -q .; then
+    echo "当前没有任务备份。"
+    return
+  fi
+  find "$BACKUP_DIR" -maxdepth 1 -type f -name 'tasks-*.json' -printf '%TY-%Tm-%Td %TH:%TM  %10s 字节  %f\n' | sort -r
+}
+
+restore_backup() {
+  source_file="${1:-}"
+  if [[ -z "$source_file" ]]; then
+    echo "用法：reminder restore <备份文件>" >&2
+    return 2
+  fi
+  source_file="$(readlink -f -- "$source_file")"
+  backup_root="$(readlink -f -- "$BACKUP_DIR")"
+  if [[ ! -f "$source_file" ]] || [[ "$source_file" != "$backup_root"/* ]]; then
+    echo "只允许恢复 $BACKUP_DIR 内的备份文件。" >&2
+    return 2
+  fi
+  node -e 'const fs=require("fs");const value=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(!Array.isArray(value))process.exit(2)' "$source_file" || {
+    echo "备份格式无效，未修改当前数据。" >&2
+    return 2
+  }
+  echo "将用 $(basename "$source_file") 替换当前任务数据。"
+  read -r -p "请输入 RESTORE 确认恢复：" confirmation
+  if [[ "$confirmation" != "RESTORE" ]]; then echo "已取消恢复。"; return; fi
+  if [[ -s "$DATA_FILE" ]]; then make_backup >/dev/null; fi
+  cp -- "$source_file" "$DATA_FILE.next"
+  chmod 600 "$DATA_FILE.next"
+  mv -- "$DATA_FILE.next" "$DATA_FILE"
+  echo "任务数据已恢复。请重新打开手机 App 自动接收。"
+}
+
+install_autostart() {
+  user_dir="$(getent passwd "$(id -u)" | cut -d: -f6)"
+  unit_dir="${XDG_CONFIG_HOME:-$user_dir/.config}/systemd/user"
+  unit_file="$unit_dir/reminder-autostart.service"
+  node_path="$(command -v node)"
+  mkdir -p "$unit_dir"
+  umask 077
+  {
+    echo '[Unit]'
+    echo 'Description=拾遗个人同步自动启动'
+    echo 'Wants=network-online.target'
+    echo 'After=network-online.target'
+    echo
+    echo '[Service]'
+    echo 'Type=simple'
+    printf 'ExecStart=%s internet-daemon\n' "$SCRIPT_PATH"
+    echo 'Restart=always'
+    echo 'RestartSec=5'
+    echo 'Environment=REMINDER_NO_OPEN=1'
+    printf 'Environment=REMINDER_NODE=%s\n' "$node_path"
+    echo
+    echo '[Install]'
+    echo 'WantedBy=default.target'
+  } > "$unit_file"
+  systemctl --user daemon-reload
+  systemctl --user enable --now reminder-autostart.service
+  echo "已开启电脑登录后自动启动同步：$unit_file"
+}
+
+internet_daemon() {
+  mkdir -p "$(dirname "$INTERNET_CODE_FILE")" "$(dirname "$TUNNEL_BINARY")"
+  if [[ ! -s "$INTERNET_CODE_FILE" ]] || ! grep -Eq '^[0-9]{6}$' "$INTERNET_CODE_FILE"; then
+    umask 077
+    random_hex="$(openssl rand -hex 4)"
+    printf '%06d' "$((16#$random_hex % 900000 + 100000))" > "$INTERNET_CODE_FILE"
+  fi
+  daemon_code="$(tr -d '\r\n' < "$INTERNET_CODE_FILE")"
+  if [[ ! -x "$TUNNEL_BINARY" ]]; then
+    echo "缺少公网连接组件，请先运行一次 reminder internet。" >&2
+    return 1
+  fi
+  : > "$TUNNEL_LOG"
+  : > "$LOG_FILE"
+  rm -f "$TUNNEL_URL_FILE"
+  node_path="${REMINDER_NODE:-$(command -v node)}"
+  env PORT="$PORT" SYNC_CODE="$daemon_code" "$node_path" "$SERVER" >>"$LOG_FILE" 2>&1 &
+  server_pid=$!
+  if [[ -s "$TUNNEL_TOKEN_FILE" ]] && [[ -s "$TUNNEL_HOSTNAME_FILE" ]]; then
+    public_url="https://$(tr -d '\r\n' < "$TUNNEL_HOSTNAME_FILE")"
+    "$TUNNEL_BINARY" tunnel --no-autoupdate run --token-file "$TUNNEL_TOKEN_FILE" >>"$TUNNEL_LOG" 2>&1 &
+  else
+    public_url=""
+    "$TUNNEL_BINARY" tunnel --no-autoupdate --url "http://127.0.0.1:$PORT" >>"$TUNNEL_LOG" 2>&1 &
+  fi
+  tunnel_pid=$!
+  cleanup_daemon() {
+    kill "$tunnel_pid" "$server_pid" 2>/dev/null || true
+    wait "$tunnel_pid" "$server_pid" 2>/dev/null || true
+  }
+  trap cleanup_daemon EXIT INT TERM
+  for _ in $(seq 1 60); do
+    if [[ -z "$public_url" ]]; then
+      public_url="$(grep -Eo 'https://[-a-z0-9]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -n 1 || true)"
+    fi
+    if server_ready && [[ -n "$public_url" ]]; then
+      umask 077
+      printf '%s' "$public_url" > "$TUNNEL_URL_FILE"
+      printf '%s' "$daemon_code" > "$ACTIVE_CODE_FILE"
+      echo "拾遗自动同步已启动：$public_url"
+      break
+    fi
+    kill -0 "$server_pid" "$tunnel_pid" 2>/dev/null || return 1
+    sleep 0.5
+  done
+  if [[ ! -s "$TUNNEL_URL_FILE" ]] || ! server_ready; then return 1; fi
+  wait -n "$server_pid" "$tunnel_pid"
+}
 
 server_ready() {
   curl -fsS --max-time 1 "http://127.0.0.1:$PORT/" >/dev/null 2>&1
 }
 
 show_credentials() {
-  if [[ -s "$TUNNEL_URL_FILE" ]] && systemctl --user is-active --quiet "$TUNNEL_UNIT" 2>/dev/null; then
+  if [[ -s "$TUNNEL_URL_FILE" ]] && { systemctl --user is-active --quiet "$TUNNEL_UNIT" 2>/dev/null || systemctl --user is-active --quiet reminder-autostart.service 2>/dev/null; }; then
     echo "手机公网同步地址：$(tr -d '\r\n' < "$TUNNEL_URL_FILE")"
   else
     lan_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -Ev '^(127\.|172\.|$)' | head -n 1 || true)"
@@ -38,20 +167,26 @@ show_credentials() {
 }
 
 stop_server() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet reminder-autostart.service 2>/dev/null; then
+    systemctl --user stop reminder-autostart.service
+    rm -f "$TUNNEL_URL_FILE"
+    echo "拾遗同步服务已停止。"
+    return
+  fi
   if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet "$TUNNEL_UNIT"; then
     systemctl --user stop "$TUNNEL_UNIT"
   fi
   rm -f "$TUNNEL_URL_FILE"
   if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet "$SYSTEMD_UNIT"; then
     systemctl --user stop "$SYSTEMD_UNIT"
-    echo "渐明同步服务已停止。"
+    echo "拾遗同步服务已停止。"
     return
   fi
   if [[ -f "$PID_FILE" ]]; then
     server_pid="$(tr -cd '0-9' < "$PID_FILE")"
     if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
       kill "$server_pid"
-      echo "渐明同步服务已停止。"
+      echo "拾遗同步服务已停止。"
     fi
     rm -f "$PID_FILE"
   else
@@ -61,9 +196,14 @@ stop_server() {
 
 case "${1:-start}" in
   stop) stop_server; exit 0 ;;
+  backup) make_backup; exit $? ;;
+  backups) list_backups; exit 0 ;;
+  restore) restore_backup "${2:-}"; exit $? ;;
+  install-autostart) install_autostart; exit $? ;;
+  internet-daemon) internet_daemon; exit $? ;;
   status)
-    if server_ready; then echo "渐明同步服务正在运行：http://localhost:$PORT"; else echo "渐明同步服务未运行。"; fi
-    if [[ -s "$TUNNEL_URL_FILE" ]] && systemctl --user is-active --quiet "$TUNNEL_UNIT" 2>/dev/null; then
+    if server_ready; then echo "拾遗同步服务正在运行：http://localhost:$PORT"; else echo "拾遗同步服务未运行。"; fi
+    if [[ -s "$TUNNEL_URL_FILE" ]] && { systemctl --user is-active --quiet "$TUNNEL_UNIT" 2>/dev/null || systemctl --user is-active --quiet reminder-autostart.service 2>/dev/null; }; then
       echo "公网同步地址：$(tr -d '\r\n' < "$TUNNEL_URL_FILE")"
     else
       echo "公网同步未启动。运行 reminder internet 开启。"
@@ -74,7 +214,7 @@ case "${1:-start}" in
   code) show_credentials; exit 0 ;;
   start|open) MODE="local" ;;
   internet) MODE="internet" ;;
-  *) echo "用法：reminder [start|open|internet|code|status|stop]"; exit 2 ;;
+  *) echo "用法：reminder [start|open|internet|code|status|stop|backup|backups|restore|install-autostart]"; exit 2 ;;
 esac
 
 if [[ "$MODE" == "internet" ]]; then
@@ -91,10 +231,29 @@ if [[ "$MODE" == "internet" ]]; then
     chmod 700 "$TUNNEL_BINARY.next"
     mv "$TUNNEL_BINARY.next" "$TUNNEL_BINARY"
   fi
+  if [[ -s "$TUNNEL_TOKEN_FILE" ]] && [[ -s "$TUNNEL_HOSTNAME_FILE" ]]; then
+    systemctl --user restart reminder-autostart.service
+    for _ in $(seq 1 30); do
+      [[ -s "$TUNNEL_URL_FILE" ]] && server_ready && break
+      sleep 0.5
+    done
+    if [[ ! -s "$TUNNEL_URL_FILE" ]] || ! server_ready; then
+      echo "固定公网同步启动失败，请查看 $TUNNEL_LOG" >&2
+      exit 1
+    fi
+    echo "拾遗同步页：http://localhost:$PORT"
+    echo "手机公网同步地址：$(tr -d '\r\n' < "$TUNNEL_URL_FILE")"
+    echo "任意 Wi-Fi 或蜂窝网络均可同步。"
+    echo "6位同步码：$(tr -d '\r\n' < "$ACTIVE_CODE_FILE")"
+    if [[ "${REMINDER_NO_OPEN:-0}" != "1" ]] && command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &
+    fi
+    exit 0
+  fi
   if server_ready; then
     systemctl --user stop "$SYSTEMD_UNIT" 2>/dev/null || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      server_ready || break
+    for _ in $(seq 1 50); do
+      if ! server_ready && ! systemctl --user is-active --quiet "$SYSTEMD_UNIT" 2>/dev/null; then break; fi
       sleep 0.2
     done
   fi
@@ -102,9 +261,9 @@ fi
 
 if ! server_ready; then
   node_bin="$(command -v node)"
-  if command -v systemd-run >/dev/null 2>&1 && systemctl --user is-system-running >/dev/null 2>&1; then
+  if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
     systemctl --user reset-failed "$SYSTEMD_UNIT" >/dev/null 2>&1 || true
-    systemd-run --user --quiet --collect --unit=reminder-sync \
+    systemd-run --user --collect --unit=reminder-sync \
       --property="WorkingDirectory=$PROJECT_ROOT" \
       --setenv="PORT=$PORT" --setenv="SYNC_CODE=$SYNC_CODE" \
       "$node_bin" "$SERVER"
@@ -131,7 +290,7 @@ if [[ "$MODE" == "internet" ]]; then
     : > "$TUNNEL_LOG"
     rm -f "$TUNNEL_URL_FILE"
     systemctl --user reset-failed "$TUNNEL_UNIT" >/dev/null 2>&1 || true
-    systemd-run --user --quiet --collect --unit=reminder-tunnel \
+    systemd-run --user --collect --unit=reminder-tunnel \
       --property="WorkingDirectory=$PROJECT_ROOT" \
       --property="StandardOutput=append:$TUNNEL_LOG" \
       --property="StandardError=append:$TUNNEL_LOG" \
@@ -152,7 +311,7 @@ if [[ "$MODE" == "internet" ]]; then
 fi
 
 lan_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -Ev '^(127\.|172\.|$)' | head -n 1 || true)"
-echo "渐明同步页：http://localhost:$PORT"
+echo "拾遗同步页：http://localhost:$PORT"
 if [[ "$MODE" == "internet" ]]; then
   echo "手机公网同步地址：$(tr -d '\r\n' < "$TUNNEL_URL_FILE")"
   echo "任意 Wi-Fi 或蜂窝网络均可同步。"
@@ -161,6 +320,6 @@ elif [[ -n "$lan_ip" ]]; then
 fi
 echo "6位同步码：$SYNC_CODE"
 
-if command -v xdg-open >/dev/null 2>&1; then
+if [[ "${REMINDER_NO_OPEN:-0}" != "1" ]] && command -v xdg-open >/dev/null 2>&1; then
   xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &
 fi

@@ -22,7 +22,7 @@ public class ReminderReceiver extends BroadcastReceiver {
                 ? new android.app.Notification.Builder(context, CHANNEL_ID)
                 : new android.app.Notification.Builder(context);
         android.app.Notification notification = builder.setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("渐明 · 该看看这件事了")
+                .setContentTitle("拾遗 · 该看看这件事了")
                 .setContentText(intent.getStringExtra("text"))
                 .setContentIntent(pending).setAutoCancel(true).build();
         String id = intent.getStringExtra("id");

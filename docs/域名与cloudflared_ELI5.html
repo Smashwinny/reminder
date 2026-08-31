@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>域名与 cloudflared · ELI5</title>
+  <style>
+    :root{--ink:#18322a;--brand:#276854;--soft:#e7f3ed;--paper:#fbfaf6;--yellow:#ffe69a;--blue:#dcecff;--line:#cadbd3}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:system-ui,"Noto Sans SC",sans-serif}
+    main{max-width:920px;margin:auto;padding:36px 20px 70px}h1{font-size:clamp(34px,7vw,64px);line-height:1.08;margin:0 0 12px}h2{font-size:clamp(25px,4vw,38px);margin:0 0 22px}.lead{font-size:20px;color:#547067;margin-bottom:36px}
+    .card{background:white;border:2px solid var(--line);border-radius:28px;padding:28px;margin:20px 0}.picture{display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap;font-size:64px;min-height:130px}.arrow{font-size:40px;color:var(--brand)}
+    .caption{text-align:center;font-size:clamp(20px,3vw,28px);font-weight:800;line-height:1.5}.small{text-align:center;color:#5c746c;font-size:17px;margin-top:8px}.address{display:inline-block;background:var(--soft);border-radius:14px;padding:8px 13px;color:var(--brand);font-family:ui-monospace,monospace;font-size:.8em}
+    .bad{background:#fff3ef;border-color:#f1c4b7}.good{background:#f0f8f4;border-color:#9fcab9}.domain{background:var(--yellow);padding:9px 14px;border-radius:14px;font-size:26px;font-weight:900}.sub{background:var(--blue);padding:9px 14px;border-radius:14px;font-size:22px;font-weight:800}
+    .tree{display:grid;gap:12px;max-width:620px;margin:20px auto}.root,.branch{padding:16px 18px;border-radius:16px;font-weight:800;text-align:center}.root{background:var(--yellow);font-size:25px}.branch{background:var(--blue);font-size:19px}.yes{font-size:clamp(42px,8vw,74px);text-align:center;color:var(--brand);font-weight:1000;margin:8px}.foot{text-align:center;margin-top:30px;font-size:20px;font-weight:800}
+  </style>
+</head>
+<body><main>
+  <h1>🏠 域名就是门牌号</h1>
+  <p class="lead">cloudflared 就是会带路的安全小邮差。</p>
+
+  <section class="card bad">
+    <div class="picture"><span>📱</span><span class="arrow">→</span><span>❓</span><span class="arrow">→</span><span>🏠</span></div>
+    <p class="caption">没有固定门牌，手机找不到电脑</p>
+    <p class="small">临时地址每次可能变：<span class="address">随机名字.trycloudflare.com</span></p>
+  </section>
+
+  <section class="card good">
+    <div class="picture"><span>📱</span><span class="arrow">→</span><span class="domain">reminder.你的域名.com</span><span class="arrow">→</span><span>🏠</span></div>
+    <p class="caption">有固定门牌，手机每次都走同一条路</p>
+  </section>
+
+  <section class="card">
+    <h2>🚇 cloudflared 是什么？</h2>
+    <div class="picture"><span>📱</span><span class="arrow">→</span><span>☁️</span><span class="arrow">→</span><span>🚇</span><span class="arrow">→</span><span>💻</span></div>
+    <p class="caption">它从电脑挖一条安全小隧道</p>
+    <p class="small">不用公开电脑地址，也不用打开路由器大门。</p>
+  </section>
+
+  <section class="card good">
+    <p class="yes">可以共用！</p>
+    <p class="caption">一个大域名，可以有很多小房间</p>
+    <div class="tree">
+      <div class="root">你的域名.com</div>
+      <div class="branch">www.你的域名.com → 产品展示页</div>
+      <div class="branch">reminder.你的域名.com → 拾遗同步</div>
+      <div class="branch">notes.你的域名.com → 以后另一个产品</div>
+    </div>
+    <p class="small">它们互不抢位置，就像同一栋楼里的不同房间。</p>
+  </section>
+
+  <p class="foot">推荐：主域名做品牌官网，子域名分别连接各个产品。</p>
+</main></body></html>

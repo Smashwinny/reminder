@@ -1,0 +1,14 @@
+[Unit]
+Description=Backup Reminder portable data volume
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/reminder
+ExecStart=/opt/reminder/deploy/backup.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/reminder/backups
