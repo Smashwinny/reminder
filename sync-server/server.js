@@ -13,6 +13,7 @@ const kimiKeyFile = process.env.KIMI_API_KEY_FILE || "/home/hulk/token_api/kimic
 const kimiEndpoint = process.env.KIMI_ENDPOINT || "https://api.kimi.com/coding/v1/chat/completions";
 const kimiModel = process.env.KIMI_MODEL || "k3";
 const dailySummaryLimit = Math.max(0, Number(process.env.KIMI_DAILY_SUMMARY_LIMIT || 20));
+const summaryRetryDelayMs = 60_000;
 const summarizing = new Set();
 const summaryQueue = [];
 let summaryWorkerActive = false;
@@ -172,13 +173,28 @@ function updateSummary(userId, id, patch) {
 async function summarizeTask(job) {
   const { userId, task } = job;
   const id = `${userId}:${task.id}`;
+  let lastError;
   try {
-    const pageInfo = await fetchPage(task.text.trim());
-    const summary = await kimiSummary(pageInfo);
-    updateSummary(userId, task.id, { summary, summaryStatus: "done", summaryError: "" });
-  } catch (error) {
-    updateSummary(userId, task.id, { summaryStatus: "error", summaryError: String(error.message || error).slice(0, 240) });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const pageInfo = await fetchPage(task.text.trim());
+        const summary = await kimiSummary(pageInfo);
+        updateSummary(userId, task.id, { summary, summaryStatus: "done", summaryError: "" });
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!retryableSummaryError(error) || attempt === 2) break;
+        await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1) ** 2));
+      }
+    }
+    updateSummary(userId, task.id, { summaryStatus: "error", summaryError: String(lastError?.message || lastError).slice(0, 240) });
   } finally { summarizing.delete(id); }
+}
+
+function retryableSummaryError(error) {
+  const message = String(error?.message || error).toLowerCase();
+  return message.includes("timeout") || message.includes("timed out") || message.includes("fetch failed") ||
+    message.includes("aborted") || /(?:返回|status\s*)\s*(?:429|5\d\d)\b/.test(message);
 }
 
 async function drainSummaryQueue() {
@@ -194,21 +210,31 @@ function scheduleSummaries(userId, tasks) {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   let dailyCount = tasks.filter(task => Number(task.summaryUpdatedAt || 0) >= today.getTime()).length;
   for (const task of tasks) {
-    if (dailyCount >= dailySummaryLimit) break;
     if (task.deleted || task.summary || !onlyUrl(task.text)) continue;
+    const retrying = task.summaryStatus === "error" || task.summaryStatus === "pending";
+    if (!retrying && dailyCount >= dailySummaryLimit) continue;
     const jobId = `${userId}:${task.id}`;
     if (summarizing.has(jobId)) continue;
-    if (task.summaryStatus === "error" && Number(task.summaryUpdatedAt || 0) > Date.now() - 5 * 60_000) continue;
+    if (task.summaryStatus === "error" && Number(task.summaryUpdatedAt || 0) > Date.now() - summaryRetryDelayMs) continue;
     task.summaryStatus = "pending";
     task.summaryError = "";
     task.summaryUpdatedAt = Date.now();
     changed = true;
     summarizing.add(jobId);
     summaryQueue.push({ userId, task });
-    dailyCount += 1;
+    if (!retrying) dailyCount += 1;
   }
   if (summaryQueue.length) setImmediate(drainSummaryQueue);
   return changed;
+}
+
+function scanSummaries() {
+  let users = [];
+  try { users = JSON.parse(fs.readFileSync(authStore.usersFile, "utf8")); } catch { return; }
+  for (const user of users) {
+    const tasks = readUserTasks(user.id);
+    if (scheduleSummaries(user.id, tasks)) writeUserTasks(user.id, tasks);
+  }
 }
 
 function sendJson(response, status, value) {
@@ -253,7 +279,7 @@ function mergeDownload(incoming){const map=new Map(tasks.map(t=>[String(t.id),t]
 async function sync(mode='merge'){if(!authToken){showAuth();throw new Error('请先登录')}document.querySelector('#status').textContent=mode==='download'?'正在接收…':'正在同步…';const response=await fetch('/api/sync',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+authToken},body:JSON.stringify({mode,tasks})});if(response.status===401){authToken='';localStorage.removeItem('reminder-auth-token');showAuth();throw new Error('登录已过期')}if(!response.ok)throw new Error((await response.json().catch(()=>({}))).error||'同步失败');const result=await response.json(),incoming=result.tasks;document.querySelector('#account-label').textContent='已登录：'+result.user.username;if(mode==='download')mergeDownload(incoming);else tasks=incoming;render();document.querySelector('#status').textContent='已同步 · '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});}
 function orderedTasks(){const active=tasks.filter(t=>!t.deleted&&((t.text||'')+' '+(t.summary||'')).toLowerCase().includes(query));if(!stableOrder.length)stableOrder=active.slice().sort((a,b)=>(a.state===3)-(b.state===3)||(a.viewCount||0)-(b.viewCount||0)||b.createdAt-a.createdAt).map(t=>String(t.id));for(const t of active)if(!stableOrder.includes(String(t.id)))stableOrder.unshift(String(t.id));return active.sort((a,b)=>stableOrder.indexOf(String(a.id))-stableOrder.indexOf(String(b.id)))}
 function render(){const all=orderedTasks(),active=all.filter(t=>t.state!==3),done=all.filter(t=>t.state===3);document.querySelector('#summary').textContent=all.length?'任务 '+all.length+' 项 · 已完成 '+done.length+' 项':'任务列表';renderGroup(document.querySelector('#tasks'),active,query?'未找到未完成任务':'没有未完成任务');renderGroup(document.querySelector('#completed'),done,query?'未找到已完成任务':'完成的任务会收在这里')}
-function renderGroup(root,items,empty){root.innerHTML=items.length?'':'<div class="empty">'+empty+'</div>';for(const t of items){const el=document.createElement('article'),colors=visual(t);el.className='task state-'+t.state;el.style.background=colors[0];el.style.borderColor=colors[1];el.innerHTML='<div class="copy"><h3></h3><p>'+stateName(t)+' · '+new Date(t.createdAt).toLocaleString()+'</p>'+(cobweb(t)?'<div class="cobweb">🕸 久置落灰 · 点击重新唤醒</div>':'')+'<div class="ai"></div></div><button class="complete" title="'+(t.state===3?'恢复任务':'标记完成')+'">'+(t.state===3?'✓':'')+'</button><button class="delete" title="删除任务">删除</button>';el.querySelector('h3').textContent=t.text.split('\\n')[0];const ai=el.querySelector('.ai');if(t.summary){ai.className='ai ai-summary';ai.textContent=t.summary}else if(t.summaryStatus==='pending'){ai.className='ai ai-status';ai.textContent='Kimi 正在阅读链接…'}else if(t.summaryStatus==='error'){ai.className='ai ai-status error';ai.textContent='摘要暂时失败，将在下次同步重试'}el.querySelector('.copy').onclick=()=>showDetail(t);el.querySelector('.complete').onclick=async()=>{t.state=t.state===3?2:3;t.updatedAt=Date.now();await sync('upload')};el.querySelector('.delete').onclick=async()=>{if(confirm('删除这项任务？')){t.deleted=true;t.updatedAt=Date.now();await sync('upload')}};root.appendChild(el)}}
+function renderGroup(root,items,empty){root.innerHTML=items.length?'':'<div class="empty">'+empty+'</div>';for(const t of items){const el=document.createElement('article'),colors=visual(t);el.className='task state-'+t.state;el.style.background=colors[0];el.style.borderColor=colors[1];el.innerHTML='<div class="copy"><h3></h3><p>'+stateName(t)+' · '+new Date(t.createdAt).toLocaleString()+'</p>'+(cobweb(t)?'<div class="cobweb">🕸 久置落灰 · 点击重新唤醒</div>':'')+'<div class="ai"></div></div><button class="complete" title="'+(t.state===3?'恢复任务':'标记完成')+'">'+(t.state===3?'✓':'')+'</button><button class="delete" title="删除任务">删除</button>';el.querySelector('h3').textContent=t.text.split('\\n')[0];const ai=el.querySelector('.ai');if(t.summary){ai.className='ai ai-summary';ai.textContent=t.summary}else if(t.summaryStatus==='pending'){ai.className='ai ai-status';ai.textContent='摘要生成中…'}else if(t.summaryStatus==='error'){ai.className='ai ai-status';ai.textContent='链接已保存 · 摘要稍后自动补全'}el.querySelector('.copy').onclick=()=>showDetail(t);el.querySelector('.complete').onclick=async()=>{t.state=t.state===3?2:3;t.updatedAt=Date.now();await sync('upload')};el.querySelector('.delete').onclick=async()=>{if(confirm('删除这项任务？')){t.deleted=true;t.updatedAt=Date.now();await sync('upload')}};root.appendChild(el)}}
 function updateDetail(){const t=detailTask,card=document.querySelector('#detail-card'),colors=visual(t);card.className='detail-card state-'+t.state;card.style.background=colors[0];card.style.borderColor=colors[1];document.querySelector('#detail-meta').textContent=stateName(t)+' · '+new Date(t.createdAt).toLocaleString();document.querySelector('#detail-start').textContent=t.state===1?'进行中':t.state===3?'恢复任务':'开始任务';document.querySelector('#detail-done').textContent=t.state===3?'恢复为未完成':'标记完成'}
 async function showDetail(t){detailTask=t;if(t.state!==3){t.viewCount=stale(t)?0:Math.min(4,(t.viewCount||0)+1);t.lastViewedAt=t.updatedAt=Date.now()}document.querySelector('#detail-text').textContent=t.text;document.querySelector('#detail-summary').textContent=t.summary||'';const open=document.querySelector('#detail-open');open.hidden=!/^https?:\\/\\/\\S+$/.test(t.text.trim());open.onclick=()=>window.open(t.text.trim(),'_blank','noopener');updateDetail();document.querySelector('#detail').showModal();if(t.state!==3)await sync('upload')}
 document.querySelector('#detail-start').onclick=async()=>{if(!detailTask)return;detailTask.state=detailTask.state===3?2:1;detailTask.updatedAt=Date.now();updateDetail();await sync('upload')};document.querySelector('#detail-done').onclick=async()=>{if(!detailTask)return;detailTask.state=detailTask.state===3?2:3;detailTask.updatedAt=Date.now();updateDetail();await sync('upload')};document.querySelector('#detail-delete').onclick=async()=>{if(detailTask&&confirm('删除这项任务？')){detailTask.deleted=true;detailTask.updatedAt=Date.now();await sync('upload');document.querySelector('#detail').close()}};document.querySelector('#detail-close').onclick=()=>document.querySelector('#detail').close();document.querySelector('#detail').onclose=()=>{detailTask=null;render()};
@@ -332,11 +358,15 @@ function createServer() { return http.createServer(async (request, response) => 
   sendJson(response, 404, { error: "not found" });
 }); }
 
-function startServer() { return createServer().listen(port, "0.0.0.0", () => {
+function startServer() { const server = createServer().listen(port, "0.0.0.0", () => {
   console.log(`拾遗同步服务已启动：http://0.0.0.0:${port}`);
   console.log("多用户账号同步已启用");
-}); }
+  scanSummaries();
+});
+  setInterval(scanSummaries, 60_000).unref();
+  return server;
+}
 
 if (require.main === module) startServer();
 
-module.exports = { mergeTasks, onlyUrl, privateAddress, createServer };
+module.exports = { mergeTasks, onlyUrl, privateAddress, retryableSummaryError, createServer };

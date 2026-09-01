@@ -6,7 +6,7 @@ const testRoot = path.resolve(__dirname, "../tmp");
 fs.mkdirSync(testRoot, { recursive: true });
 process.env.DATA_DIR = fs.mkdtempSync(path.join(testRoot, "multi-user-test-"));
 process.env.REGISTRATION_INVITE_CODE = "test-invite-9284";
-const { mergeTasks, onlyUrl, privateAddress, createServer } = require("./server");
+const { mergeTasks, onlyUrl, privateAddress, retryableSummaryError, createServer } = require("./server");
 const { createAuthStore } = require("./auth-store");
 
 test("merge keeps independently created tasks", () => {
@@ -44,6 +44,13 @@ test("URL and private-network guards reject unsafe inputs", () => {
   assert.equal(privateAddress("127.0.0.1"), true);
   assert.equal(privateAddress("192.168.1.10"), true);
   assert.equal(privateAddress("8.8.8.8"), false);
+});
+
+test("summary retry only treats transient network and service errors as retryable", () => {
+  assert.equal(retryableSummaryError(new Error("fetch failed")), true);
+  assert.equal(retryableSummaryError(new Error("The operation was aborted due to timeout")), true);
+  assert.equal(retryableSummaryError(new Error("Kimi 返回 503")), true);
+  assert.equal(retryableSummaryError(new Error("网页正文太少")), false);
 });
 
 async function post(base, route, body, token) {

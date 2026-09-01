@@ -92,10 +92,16 @@ public class MainActivity extends android.app.Activity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean syncInProgress;
     private boolean syncAgain;
+    private int summaryPollAttempts;
     private final Runnable automaticSync = () -> {
         String server = getSharedPreferences(PREFS, MODE_PRIVATE).getString("sync_url", "").trim();
         String token = getSharedPreferences(PREFS, MODE_PRIVATE).getString("auth_token", "").trim();
         if (!server.isEmpty() && !token.isEmpty()) syncNow(server, token, "merge", true);
+    };
+    private final Runnable summaryRefresh = () -> {
+        String server = getSharedPreferences(PREFS, MODE_PRIVATE).getString("sync_url", "").trim();
+        String token = getSharedPreferences(PREFS, MODE_PRIVATE).getString("auth_token", "").trim();
+        if (!server.isEmpty() && !token.isEmpty()) syncNow(server, token, "download", true);
     };
 
     @Override protected void onCreate(Bundle state) {
@@ -382,11 +388,11 @@ public class MainActivity extends android.app.Activity {
             summaryView.setMaxLines(4);
             copy.addView(summaryView);
         } else if ("pending".equals(task.summaryStatus)) {
-            TextView aiStatus = text("Kimi 正在阅读链接，稍后同步即可看到摘要", 12, MUTED, Typeface.NORMAL);
+            TextView aiStatus = text("摘要生成中…", 12, MUTED, Typeface.NORMAL);
             aiStatus.setPadding(0, dp(6), 0, 0);
             copy.addView(aiStatus);
         } else if ("error".equals(task.summaryStatus)) {
-            TextView aiStatus = text("摘要暂时失败，下次同步会重试", 12, NEW_STRONG, Typeface.NORMAL);
+            TextView aiStatus = text("链接已保存 · 摘要稍后自动补全", 12, MUTED, Typeface.NORMAL);
             aiStatus.setPadding(0, dp(6), 0, 0);
             copy.addView(aiStatus);
         }
@@ -808,6 +814,13 @@ public class MainActivity extends android.app.Activity {
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit().putLong("last_sync_at", syncedAt).apply();
                     if (syncStatus != null) syncStatus.setText(syncStatusText());
                     refreshList();
+                    boolean waitingForSummary = false;
+                    for (Task task : received) if ("pending".equals(task.summaryStatus)) { waitingForSummary = true; break; }
+                    mainHandler.removeCallbacks(summaryRefresh);
+                    if (waitingForSummary && summaryPollAttempts < 15) {
+                        summaryPollAttempts++;
+                        mainHandler.postDelayed(summaryRefresh, 4000);
+                    } else summaryPollAttempts = 0;
                     String action = "upload".equals(mode) ? "上传完成" : "download".equals(mode) ? "接收完成" : "双向同步完成";
                     if (!silent) Toast.makeText(this, action + "，同步库共 " + received.size() + " 条记录", Toast.LENGTH_SHORT).show();
                 });
