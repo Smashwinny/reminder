@@ -64,6 +64,14 @@ SYNC_CODE=654321 node sync-server/server.js
 node --test sync-server/server.test.js
 ```
 
+管理员为忘记密码的用户签发一次性重置链接（30 分钟有效，新链接会让该用户之前未使用的链接失效）：
+
+```bash
+DATA_DIR=/data node create-reset-link.js 用户名 https://reminder.geniusqi.com
+```
+
+用户在重置页面自行输入新密码。成功后该账号的旧会话全部失效，链接不能再次使用。
+
 ## 当前公网版本
 
 当前使用固定域名的 Cloudflare Named Tunnel。电脑必须开机且拾遗自动启动服务正在运行；公网地址不会随隧道重启改变。同步数据仍保存在本机，不上传到 Cloudflare 存储。手机图片和视频附件只同步名称与轻量引用，媒体本体暂不跨设备复制。

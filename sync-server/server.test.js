@@ -7,6 +7,7 @@ fs.mkdirSync(testRoot, { recursive: true });
 process.env.DATA_DIR = fs.mkdtempSync(path.join(testRoot, "multi-user-test-"));
 process.env.REGISTRATION_INVITE_CODE = "test-invite-9284";
 const { mergeTasks, onlyUrl, privateAddress, createServer } = require("./server");
+const { createAuthStore } = require("./auth-store");
 
 test("merge keeps independently created tasks", () => {
   const merged = mergeTasks(
@@ -71,6 +72,24 @@ test("accounts require invite and each user sees only their own tasks", async ()
   }
 });
 
+test("one-time password reset revokes old sessions and cannot be reused", async () => {
+  const server = createServer();
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const account = await (await post(base, "/api/auth/register", { username: "reset_user", password: "old-password", inviteCode: process.env.REGISTRATION_INVITE_CODE })).json();
+    const reset = createAuthStore(process.env.DATA_DIR).createPasswordReset("reset_user");
+    const changed = await post(base, "/api/auth/reset-password", { token: reset.token, password: "new-password" });
+    assert.equal(changed.status, 200);
+    assert.equal((await fetch(base + "/api/auth/me", { headers: { authorization: `Bearer ${account.token}` } })).status, 401);
+    assert.equal((await post(base, "/api/auth/login", { username: "reset_user", password: "old-password" })).status, 401);
+    assert.equal((await post(base, "/api/auth/login", { username: "reset_user", password: "new-password" })).status, 200);
+    assert.equal((await post(base, "/api/auth/reset-password", { token: reset.token, password: "another-password" })).status, 400);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("desktop page exposes search, completed section and progressive attention UI", async () => {
   const server = createServer();
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -83,6 +102,8 @@ test("desktop page exposes search, completed section and progressive attention U
     assert.match(html, /viewCount/);
     assert.match(html, /久置落灰/);
     assert.match(html, /width:28px/);
+    const reset = await (await fetch(`http://127.0.0.1:${address.port}/reset`)).text();
+    assert.match(reset, /设置新密码/);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }

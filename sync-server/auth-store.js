@@ -27,6 +27,7 @@ function verifyPassword(password, encoded) {
 function createAuthStore(dataDir, options = {}) {
   const usersFile = path.join(dataDir, "users.json");
   const sessionsFile = path.join(dataDir, "sessions.json");
+  const resetTokensFile = path.join(dataDir, "password-reset-tokens.json");
   const inviteCode = String(options.inviteCode || "");
   const sessionTtlMs = Number(options.sessionTtlMs || 30 * 86400_000);
 
@@ -66,6 +67,36 @@ function createAuthStore(dataDir, options = {}) {
     if (!user || !verifyPassword(String(password || ""), user.passwordHash)) throw new Error("用户名或密码错误");
     return { user: publicUser(user), token: issueSession(user.id) };
   }
+  function createPasswordReset(usernameValue, ttlMs = 30 * 60_000) {
+    const username = cleanUsername(usernameValue);
+    const user = read(usersFile).find(item => item.username.toLowerCase() === username.toLowerCase());
+    if (!user) throw new Error("用户不存在");
+    const token = crypto.randomBytes(32).toString("base64url");
+    const now = Date.now();
+    const active = read(resetTokensFile).filter(item => item.expiresAt > now && item.userId !== user.id);
+    active.push({ tokenHash: crypto.createHash("sha256").update(token).digest("hex"), userId: user.id, createdAt: now, expiresAt: now + ttlMs });
+    atomicWrite(resetTokensFile, active);
+    return { token, expiresAt: now + ttlMs, user: publicUser(user) };
+  }
+  function resetPassword(tokenValue, password) {
+    const token = String(tokenValue || "");
+    if (token.length < 32) throw new Error("重置链接无效或已经使用");
+    validateCredentials("reset_user", password);
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const now = Date.now();
+    const records = read(resetTokensFile);
+    const record = records.find(item => item.tokenHash === tokenHash && item.expiresAt > now);
+    if (!record) throw new Error("重置链接无效、已过期或已经使用");
+    const users = read(usersFile);
+    const user = users.find(item => item.id === record.userId);
+    if (!user) throw new Error("用户不存在");
+    user.passwordHash = hashPassword(password);
+    user.passwordChangedAt = now;
+    atomicWrite(usersFile, users);
+    atomicWrite(sessionsFile, read(sessionsFile).filter(item => item.userId !== user.id && item.expiresAt > now));
+    atomicWrite(resetTokensFile, records.filter(item => item.tokenHash !== tokenHash && item.expiresAt > now));
+    return { user: publicUser(user), token: issueSession(user.id) };
+  }
   function authenticate(header) {
     const token = String(header || "").match(/^Bearer\s+(.+)$/i)?.[1];
     if (!token) return null;
@@ -82,7 +113,7 @@ function createAuthStore(dataDir, options = {}) {
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     atomicWrite(sessionsFile, read(sessionsFile).filter(item => item.tokenHash !== tokenHash));
   }
-  return { register, login, authenticate, logout, usersFile };
+  return { register, login, createPasswordReset, resetPassword, authenticate, logout, usersFile };
 }
 
 module.exports = { createAuthStore, hashPassword, verifyPassword, atomicWrite };

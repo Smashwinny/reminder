@@ -264,6 +264,12 @@ document.querySelector('#login').onclick=()=>authenticate('login');document.quer
 document.querySelector('#add').onclick=add;document.querySelector('#refresh').onclick=()=>sync('download').catch(e=>document.querySelector('#status').textContent=e.message);document.querySelector('#draft').onkeydown=e=>{if(e.ctrlKey&&e.key==='Enter')add()};document.querySelector('#search').oninput=e=>{query=e.target.value.trim().toLowerCase();render()};sync('download').catch(e=>document.querySelector('#status').textContent=e.message);setInterval(()=>{if(tasks.some(t=>t.summaryStatus==='pending'))sync('download').catch(()=>{})},5000);
 </script></body></html>`;
 
+const resetPage = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>重置密码 · 拾遗</title><style>
+:root{--brand:#265849;--paper:#f8f7f3;--ink:#222b27;--muted:#68716d;--line:#dfe5e1;--error:#b83232}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--paper);color:var(--ink);font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}.card{width:min(420px,calc(100% - 32px));padding:30px;background:white;border:1px solid var(--line);border-radius:24px;box-shadow:0 18px 60px #18382b18}.brand{display:flex;align-items:center;gap:10px}.logo{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:var(--brand);color:white;font-size:20px;font-weight:800}h1{margin:25px 0 6px;font-size:27px}.muted{margin:0 0 20px;color:var(--muted)}input{width:100%;margin:6px 0;padding:13px;border:1px solid var(--line);border-radius:12px;font:15px inherit;outline:none}input:focus{border-color:var(--brand);box-shadow:0 0 0 3px #26584918}button{width:100%;margin-top:12px;padding:13px;border:0;border-radius:12px;background:var(--brand);color:white;font:700 15px inherit;cursor:pointer}.status{min-height:24px;margin-top:12px;color:var(--error);font-size:13px}.ok{color:var(--brand)}</style></head><body><main class="card"><div class="brand"><span class="logo">✓</span><strong>拾遗</strong></div><h1>设置新密码</h1><p class="muted">密码至少 8 位。提交成功后，其他设备上的旧登录会自动失效。</p><input id="password" type="password" autocomplete="new-password" placeholder="输入新密码（至少8位）"><input id="confirm" type="password" autocomplete="new-password" placeholder="再次输入新密码"><button id="submit">确认并登录</button><div class="status" id="status"></div></main><script>
+const status=document.querySelector('#status'),button=document.querySelector('#submit');button.onclick=async()=>{const password=document.querySelector('#password').value,confirm=document.querySelector('#confirm').value,token=location.hash.slice(1);if(!token){status.textContent='重置链接无效';return}if(password.length<8){status.textContent='密码至少需要8位';return}if(password!==confirm){status.textContent='两次输入的密码不一致';return}button.disabled=true;status.textContent='正在设置…';try{const response=await fetch('/api/auth/reset-password',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,password})}),result=await response.json();if(!response.ok)throw new Error(result.error||'重置失败');localStorage.setItem('reminder-auth-token',result.token);history.replaceState(null,'','/reset');status.className='status ok';status.textContent='密码已更新，正在进入拾遗…';setTimeout(()=>location.replace('/'),700)}catch(error){status.textContent=error.message;button.disabled=false}};
+</script></body></html>`;
+
 function createServer() { return http.createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/api/healthz") {
     return sendJson(response, 200, { ok: true, service: "reminder", storage: "portable-json-v1" });
@@ -271,6 +277,10 @@ function createServer() { return http.createServer(async (request, response) => 
   if (request.method === "GET" && request.url === "/") {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" });
     return response.end(page);
+  }
+  if (request.method === "GET" && request.url === "/reset") {
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" });
+    return response.end(resetPage);
   }
   if (request.method === "POST" && request.url === "/api/auth/register") {
     let key;
@@ -289,6 +299,12 @@ function createServer() { return http.createServer(async (request, response) => 
       const result = authStore.login(body.username, body.password); authAttempts.delete(key);
       return sendJson(response, 200, result);
     } catch (error) { if (key) recordAuthFailure(key); return sendJson(response, 401, { error: String(error.message || error) }); }
+  }
+  if (request.method === "POST" && request.url === "/api/auth/reset-password") {
+    try {
+      const body = await readJson(request);
+      return sendJson(response, 200, authStore.resetPassword(body.token, body.password));
+    } catch (error) { return sendJson(response, 400, { error: String(error.message || error) }); }
   }
   if (request.method === "GET" && request.url === "/api/auth/me") {
     const user = authenticatedUser(request);
