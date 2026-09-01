@@ -31,5 +31,5 @@ node -e 'const fs=require("fs");const [file,applicationId,versionCode,versionNam
 
 ssh "$server" "mkdir -p /opt/reminder/tmp/ota-$app_slug"
 scp "$stage/$apk_name" "$stage/stable.json" "$server:/opt/reminder/tmp/ota-$app_slug/"
-ssh "$server" "docker exec reminder_app mkdir -p /data/releases/$app_slug && docker cp /opt/reminder/tmp/ota-$app_slug/$apk_name reminder_app:/data/releases/$app_slug/$apk_name && docker cp /opt/reminder/tmp/ota-$app_slug/stable.json reminder_app:/data/releases/$app_slug/stable.json"
+ssh "$server" "docker exec reminder_app mkdir -p /data/releases/$app_slug && docker cp /opt/reminder/tmp/ota-$app_slug/$apk_name reminder_app:/data/releases/$app_slug/$apk_name && docker cp /opt/reminder/tmp/ota-$app_slug/stable.json reminder_app:/data/releases/$app_slug/stable.json && docker exec -u 0 reminder_app chmod 0644 /data/releases/$app_slug/$apk_name /data/releases/$app_slug/stable.json"
 echo "已发布: https://reminder.geniusqi.com/releases/$app_slug/stable.json"
