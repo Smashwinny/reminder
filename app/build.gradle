@@ -1,7 +1,12 @@
 plugins { id 'com.android.application' }
 
-def otaVersionCode = providers.gradleProperty('VERSION_CODE').orElse('15')
-def otaVersionName = providers.gradleProperty('VERSION_NAME').orElse('2.1.1')
+def otaVersionCode = providers.gradleProperty('VERSION_CODE').orElse('16')
+def otaVersionName = providers.gradleProperty('VERSION_NAME').orElse('2.2.0')
+def releaseSigningFile = System.getenv('REMINDER_SIGNING_PROPERTIES')
+def releaseSigning = new Properties()
+if (releaseSigningFile && file(releaseSigningFile).isFile()) {
+    file(releaseSigningFile).withInputStream { releaseSigning.load(it) }
+}
 
 android {
     namespace 'com.smashwinny.reminder'
@@ -14,8 +19,33 @@ android {
         versionCode otaVersionCode.get().toInteger()
         versionName otaVersionName.get()
     }
+
+    signingConfigs {
+        release {
+            if (!releaseSigning.isEmpty()) {
+                storeFile file(releaseSigning.getProperty('storeFile'))
+                storePassword releaseSigning.getProperty('storePassword')
+                keyAlias releaseSigning.getProperty('keyAlias')
+                keyPassword releaseSigning.getProperty('keyPassword')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+        }
+    }
 }
 
 dependencies {
     implementation 'androidx.core:core:1.13.1'
+}
+
+tasks.configureEach { task ->
+    if (task.name.toLowerCase().contains('release') && task.name.toLowerCase().contains('assemble')) {
+        task.doFirst {
+            if (releaseSigning.isEmpty()) throw new GradleException('正式构建需要 REMINDER_SIGNING_PROPERTIES')
+        }
+    }
 }
