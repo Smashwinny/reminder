@@ -133,7 +133,9 @@ public class MainActivity extends android.app.Activity {
         brandCopy.addView(text("让重要的事保持可见", 12, MUTED, Typeface.NORMAL));
         brandRow.addView(brandCopy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         Button sync = smallButton("同步");
-        sync.setOnClickListener(v -> showSyncDialog());
+        sync.setContentDescription("同步；长按可切换账号");
+        sync.setOnClickListener(v -> manualSync());
+        sync.setOnLongClickListener(v -> { showSyncDialog(); return true; });
         brandRow.addView(sync, new LinearLayout.LayoutParams(dp(76), dp(40)));
         root.addView(brandRow);
 
@@ -690,8 +692,15 @@ public class MainActivity extends android.app.Activity {
 
     private String syncStatusText() {
         long last = getSharedPreferences(PREFS, MODE_PRIVATE).getLong("last_sync_at", 0);
-        if (last == 0) return "尚未同步 · 点击右上角登录云端";
+        if (last == 0) return "尚未同步 · 点击右上角开始同步";
         return "上次同步 " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(last);
+    }
+
+    private void manualSync() {
+        String server = getSharedPreferences(PREFS, MODE_PRIVATE).getString("sync_url", "https://reminder.geniusqi.com").trim();
+        String token = getSharedPreferences(PREFS, MODE_PRIVATE).getString("auth_token", "").trim();
+        if (token.isEmpty()) { showSyncDialog(); return; }
+        syncNow(server, token, "merge", false);
     }
 
     private void showSyncDialog() {
@@ -795,6 +804,16 @@ public class MainActivity extends android.app.Activity {
                 StringBuilder response = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) response.append(line);
+                if (status == 401) {
+                    runOnUiThread(() -> {
+                        String activeToken = getSharedPreferences(PREFS, MODE_PRIVATE).getString("auth_token", "");
+                        if (!token.equals(activeToken)) return;
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("auth_token").apply();
+                        if (syncStatus != null) syncStatus.setText("登录已过期 · 请重新登录一次");
+                        showSyncDialog();
+                    });
+                    return;
+                }
                 if (status != 200) throw new IllegalStateException(new JSONObject(response.toString()).optString("error", "服务器错误 " + status));
                 JSONArray merged = new JSONObject(response.toString()).getJSONArray("tasks");
                 List<Task> received = new ArrayList<>();
