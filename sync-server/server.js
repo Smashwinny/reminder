@@ -242,6 +242,27 @@ function sendJson(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
+function releaseFile(requestPath) {
+  const match = requestPath.match(/^\/releases\/([a-z0-9_-]{2,40})\/([a-zA-Z0-9._-]{1,100})$/);
+  if (!match) return null;
+  const file = path.join(dataDir, "releases", match[1], match[2]);
+  return file.startsWith(path.join(dataDir, "releases") + path.sep) ? file : null;
+}
+
+function sendRelease(request, response, file) {
+  let stat;
+  try { stat = fs.statSync(file); } catch { return sendJson(response, 404, { error: "release not found" }); }
+  if (!stat.isFile() || stat.size > 200 * 1024 * 1024) return sendJson(response, 404, { error: "release not found" });
+  const type = file.endsWith(".json") ? "application/json; charset=utf-8" : file.endsWith(".apk") ? "application/vnd.android.package-archive" : "application/octet-stream";
+  response.writeHead(200, {
+    "Content-Type": type, "Content-Length": stat.size, "Cache-Control": file.endsWith(".json") ? "no-store" : "public, max-age=86400, immutable",
+    "Content-Disposition": file.endsWith(".apk") ? `attachment; filename="${path.basename(file)}"` : "inline",
+    "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"
+  });
+  if (request.method === "HEAD") return response.end();
+  fs.createReadStream(file).pipe(response);
+}
+
 function readJson(request) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -299,6 +320,10 @@ const status=document.querySelector('#status'),button=document.querySelector('#s
 function createServer() { return http.createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/api/healthz") {
     return sendJson(response, 200, { ok: true, service: "reminder", storage: "portable-json-v1" });
+  }
+  if (["GET", "HEAD"].includes(request.method)) {
+    const file = releaseFile(new URL(request.url, "http://localhost").pathname);
+    if (file) return sendRelease(request, response, file);
   }
   if (request.method === "GET" && request.url === "/") {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" });

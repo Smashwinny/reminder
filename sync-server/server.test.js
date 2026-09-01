@@ -97,6 +97,26 @@ test("one-time password reset revokes old sessions and cannot be reused", async 
   }
 });
 
+test("release endpoint serves manifests and APK downloads with safe content types", async () => {
+  const releaseDir = path.join(process.env.DATA_DIR, "releases", "reminder");
+  fs.mkdirSync(releaseDir, { recursive: true });
+  fs.writeFileSync(path.join(releaseDir, "stable.json"), '{"versionCode":14}');
+  fs.writeFileSync(path.join(releaseDir, "reminder-2.1.0.apk"), "apk-test");
+  const server = createServer();
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const manifest = await fetch(base + "/releases/reminder/stable.json");
+    assert.equal(manifest.status, 200);
+    assert.match(manifest.headers.get("content-type"), /application\/json/);
+    const apk = await fetch(base + "/releases/reminder/reminder-2.1.0.apk");
+    assert.equal(apk.status, 200);
+    assert.equal(apk.headers.get("content-type"), "application/vnd.android.package-archive");
+    assert.equal(await apk.text(), "apk-test");
+    assert.equal((await fetch(base + "/releases/reminder/../users.json")).status, 404);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test("desktop page exposes search, completed section and progressive attention UI", async () => {
   const server = createServer();
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));

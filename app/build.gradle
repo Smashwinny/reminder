@@ -1,5 +1,8 @@
 plugins { id 'com.android.application' }
 
+def otaVersionCode = providers.gradleProperty('VERSION_CODE').orElse('15')
+def otaVersionName = providers.gradleProperty('VERSION_NAME').orElse('2.1.1')
+
 android {
     namespace 'com.smashwinny.reminder'
     compileSdk 34
@@ -8,7 +11,11 @@ android {
         applicationId 'com.smashwinny.reminder'
         minSdk 23
         targetSdk 34
-        versionCode 13
-        versionName '2.0.0'
+        versionCode otaVersionCode.get().toInteger()
+        versionName otaVersionName.get()
     }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
 }
