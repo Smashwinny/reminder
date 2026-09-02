@@ -111,7 +111,8 @@ public class MainActivity extends android.app.Activity {
         requestNotificationPermission();
         renderScreen();
         scheduleAutoSync(250);
-        UpdateChecker.checkOnceDaily(this, "https://reminder.geniusqi.com/releases/reminder/stable.json");
+        UpdateChecker.checkPeriodically(this, new UpdateChecker.Config(
+                "https://reminder.geniusqi.com/releases/reminder/stable.json", "拾遗"));
     }
 
     @Override protected void onResume() {

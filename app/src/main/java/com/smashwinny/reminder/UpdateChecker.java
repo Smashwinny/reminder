@@ -24,21 +24,32 @@ import java.security.MessageDigest;
 
 final class UpdateChecker {
     private static final String PREFS = "app_updates";
-    private static final long CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000;
-    private static final String TRUSTED_HOST = "reminder.geniusqi.com";
     private static boolean installing;
 
     private UpdateChecker() {}
 
-    static void checkOnceDaily(Activity activity, String manifestUrl) {
-        SharedPreferences prefs = activity.getSharedPreferences(PREFS, Activity.MODE_PRIVATE);
-        long now = System.currentTimeMillis();
-        if (now - prefs.getLong("last_check_at", 0) < CHECK_INTERVAL_MS) return;
-        prefs.edit().putLong("last_check_at", now).apply();
-        new Thread(() -> load(activity, manifestUrl, false)).start();
+    static final class Config {
+        final String manifestUrl;
+        final String appName;
+        final long checkIntervalMs;
+
+        Config(String manifestUrl, String appName) { this(manifestUrl, appName, 24L * 60 * 60 * 1000); }
+        Config(String manifestUrl, String appName, long checkIntervalMs) {
+            this.manifestUrl = manifestUrl;
+            this.appName = appName;
+            this.checkIntervalMs = Math.max(60_000, checkIntervalMs);
+        }
     }
 
-    static void checkNow(Activity activity, String manifestUrl) { new Thread(() -> load(activity, manifestUrl, true)).start(); }
+    static void checkPeriodically(Activity activity, Config config) {
+        SharedPreferences prefs = activity.getSharedPreferences(PREFS, Activity.MODE_PRIVATE);
+        long now = System.currentTimeMillis();
+        if (now - prefs.getLong("last_check_at", 0) < config.checkIntervalMs) return;
+        prefs.edit().putLong("last_check_at", now).apply();
+        new Thread(() -> load(activity, config, false)).start();
+    }
+
+    static void checkNow(Activity activity, Config config) { new Thread(() -> load(activity, config, true)).start(); }
 
     static void resumePendingInstall(Activity activity) {
         installing = false;
@@ -54,10 +65,11 @@ final class UpdateChecker {
         if (Build.VERSION.SDK_INT < 26 || activity.getPackageManager().canRequestPackageInstalls()) install(activity, new File(path));
     }
 
-    private static void load(Activity activity, String manifestUrl, boolean showCurrent) {
+    private static void load(Activity activity, Config config, boolean showCurrent) {
         HttpURLConnection connection = null;
         try {
-            connection = open(trustedHttps(manifestUrl), "application/json");
+            URL manifest = officialHttps(config.manifestUrl, null);
+            connection = open(manifest, "application/json");
             if (connection.getResponseCode() != 200) throw new IllegalStateException("更新服务暂时不可用");
             StringBuilder raw = new StringBuilder();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
@@ -70,25 +82,25 @@ final class UpdateChecker {
                 if (showCurrent) activity.runOnUiThread(() -> message(activity, "已经是最新版本"));
                 return;
             }
-            URL apk = trustedHttps(release.getString("apkUrl"));
+            URL apk = officialHttps(release.getString("apkUrl"), manifest.getHost());
             String version = release.optString("versionName", String.valueOf(latest));
             String notes = release.optString("notes", "包含体验优化与问题修复");
             String sha256 = release.getString("sha256");
             boolean required = release.optBoolean("required", false);
-            activity.runOnUiThread(() -> showUpdate(activity, latest, version, notes, apk.toString(), sha256, required));
+            activity.runOnUiThread(() -> showUpdate(activity, config.appName, latest, version, notes, apk.toString(), sha256, required, manifest.getHost()));
         } catch (Exception ignored) {
             if (showCurrent) activity.runOnUiThread(() -> message(activity, "暂时无法检查更新，请稍后再试"));
         } finally { if (connection != null) connection.disconnect(); }
     }
 
-    private static void showUpdate(Activity activity, int versionCode, String version, String notes, String apkUrl, String sha256, boolean required) {
-        AlertDialog.Builder dialog = new AlertDialog.Builder(activity).setTitle("拾遗有新版本 " + version).setMessage(notes)
-                .setPositiveButton("下载升级", (d, which) -> download(activity, versionCode, apkUrl, sha256));
+    private static void showUpdate(Activity activity, String appName, int versionCode, String version, String notes, String apkUrl, String sha256, boolean required, String trustedHost) {
+        AlertDialog.Builder dialog = new AlertDialog.Builder(activity).setTitle(appName + "有新版本 " + version).setMessage(notes)
+                .setPositiveButton("下载升级", (d, which) -> download(activity, appName, versionCode, apkUrl, sha256, trustedHost));
         if (!required) dialog.setNegativeButton("稍后提醒", null);
         dialog.setCancelable(!required).show();
     }
 
-    private static void download(Activity activity, int versionCode, String apkUrl, String expectedSha256) {
+    private static void download(Activity activity, String appName, int versionCode, String apkUrl, String expectedSha256, String trustedHost) {
         Toast.makeText(activity, "正在安全下载更新…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             HttpURLConnection connection = null;
@@ -96,9 +108,10 @@ final class UpdateChecker {
             try {
                 File dir = new File(activity.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "updates");
                 if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("无法创建更新目录");
-                next = new File(dir, "reminder-" + versionCode + ".apk.next");
-                File apk = new File(dir, "reminder-" + versionCode + ".apk");
-                connection = open(trustedHttps(apkUrl), "application/vnd.android.package-archive");
+                String safeName = activity.getPackageName().replaceAll("[^A-Za-z0-9._-]", "_");
+                next = new File(dir, safeName + "-" + versionCode + ".apk.next");
+                File apk = new File(dir, safeName + "-" + versionCode + ".apk");
+                connection = open(officialHttps(apkUrl, trustedHost), "application/vnd.android.package-archive");
                 if (connection.getResponseCode() != 200) throw new IllegalStateException("下载失败");
                 MessageDigest digest = MessageDigest.getInstance("SHA-256");
                 try (InputStream input = connection.getInputStream(); FileOutputStream output = new FileOutputStream(next)) {
@@ -109,7 +122,7 @@ final class UpdateChecker {
                 if (apk.exists() && !apk.delete()) throw new IllegalStateException("无法替换旧更新包");
                 if (!next.renameTo(apk)) throw new IllegalStateException("无法保存更新包");
                 activity.getSharedPreferences(PREFS, Activity.MODE_PRIVATE).edit().putString("pending_apk", apk.getAbsolutePath()).putInt("pending_version", versionCode).apply();
-                activity.runOnUiThread(() -> requestInstall(activity, apk));
+                activity.runOnUiThread(() -> requestInstall(activity, appName, apk));
             } catch (Exception error) {
                 if (next != null) next.delete();
                 activity.runOnUiThread(() -> message(activity, "更新下载失败，请稍后重试"));
@@ -117,10 +130,10 @@ final class UpdateChecker {
         }).start();
     }
 
-    private static void requestInstall(Activity activity, File apk) {
+    private static void requestInstall(Activity activity, String appName, File apk) {
         if (Build.VERSION.SDK_INT >= 26 && !activity.getPackageManager().canRequestPackageInstalls()) {
-            new AlertDialog.Builder(activity).setTitle("允许拾遗安装更新")
-                    .setMessage("首次升级需要开启一次“允许来自此来源的应用”。开启后返回拾遗，安装页面会自动继续。")
+            new AlertDialog.Builder(activity).setTitle("允许" + appName + "安装更新")
+                    .setMessage("首次升级需要开启一次“允许来自此来源的应用”。开启后返回" + appName + "，安装页面会自动继续。")
                     .setPositiveButton("去开启", (d, which) -> activity.startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + activity.getPackageName()))))
                     .setNegativeButton("稍后", null).show();
             return;
@@ -143,9 +156,10 @@ final class UpdateChecker {
         connection.setRequestProperty("Accept", accept); return connection;
     }
 
-    private static URL trustedHttps(String value) throws Exception {
+    private static URL officialHttps(String value, String expectedHost) throws Exception {
         URL url = new URL(value);
-        if (!"https".equalsIgnoreCase(url.getProtocol()) || !TRUSTED_HOST.equalsIgnoreCase(url.getHost())) throw new SecurityException("只允许官方 HTTPS 更新地址");
+        if (!"https".equalsIgnoreCase(url.getProtocol()) || url.getUserInfo() != null || url.getHost().isEmpty()) throw new SecurityException("只允许官方 HTTPS 更新地址");
+        if (expectedHost != null && !expectedHost.equalsIgnoreCase(url.getHost())) throw new SecurityException("更新包必须与清单来自同一官方域名");
         return url;
     }
 

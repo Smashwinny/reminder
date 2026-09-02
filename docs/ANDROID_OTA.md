@@ -1,5 +1,7 @@
 # Android OTA 更新约定
 
+跨项目复用与 Codex 交接请以 [OTA_REUSE_HANDOFF.md](OTA_REUSE_HANDOFF.md) 为唯一入口；本页只保留拾遗部署背景。
+
 同一套服务可承载多个 App，每个 App 使用独立目录、包名和签名密钥：
 
 ```text
