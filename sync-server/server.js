@@ -14,6 +14,7 @@ const kimiEndpoint = process.env.KIMI_ENDPOINT || "https://api.kimi.com/coding/v
 const kimiModel = process.env.KIMI_MODEL || "k3";
 const dailySummaryLimit = Math.max(0, Number(process.env.KIMI_DAILY_SUMMARY_LIMIT || 20));
 const summaryRetryDelayMs = 60_000;
+const summaryConcurrency = Math.max(1, Math.min(4, Number(process.env.SUMMARY_CONCURRENCY || 3)));
 const summarizing = new Set();
 const summaryQueue = [];
 let summaryWorkerActive = false;
@@ -97,13 +98,33 @@ async function assertPublicUrl(url) {
   if (!records.length || records.some(record => privateAddress(record.address))) throw new Error("不允许访问内网地址");
 }
 
+function xStatusId(url) {
+  const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  if (host !== "x.com" && host !== "twitter.com") return "";
+  return url.pathname.match(/^\/[^/]+\/status\/(\d+)/)?.[1] || "";
+}
+
+async function fetchXPost(url) {
+  const id = xStatusId(url);
+  if (!id) return null;
+  const response = await fetch(`https://api.fxtwitter.com/status/${id}`, { signal: AbortSignal.timeout(8_000) });
+  if (!response.ok) throw new Error(`X 内容接口返回 ${response.status}`);
+  const tweet = (await response.json())?.tweet;
+  const content = String(tweet?.text || "").replace(/\s+/g, " ").trim();
+  if (!content) throw new Error("X 内容为空");
+  const author = String(tweet?.author?.name || tweet?.author?.screen_name || "X 帖子").trim();
+  return { finalUrl: String(url), title: `${author} 的帖子`, content: content.slice(0, 6_000) };
+}
+
 async function fetchPage(startUrl) {
   let url = new URL(startUrl);
+  const xPost = await fetchXPost(url).catch(() => null);
+  if (xPost) return xPost;
   for (let redirects = 0; redirects <= 4; redirects += 1) {
     await assertPublicUrl(url);
     const response = await fetch(url, {
       redirect: "manual",
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(10_000),
       headers: { "User-Agent": "ReminderSummary/1.0", "Accept": "text/html,text/plain,application/xhtml+xml" }
     });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
@@ -130,7 +151,7 @@ async function fetchPage(startUrl) {
     const content = html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ")
       .replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&#39;/g, "'").replace(/&quot;/gi, '"').replace(/\s+/g, " ").trim();
     if (content.length < 80) throw new Error("网页正文太少");
-    return { finalUrl: String(url), title: title.replace(/\s+/g, " ").trim(), content: content.slice(0, 24_000) };
+    return { finalUrl: String(url), title: title.replace(/\s+/g, " ").trim(), content: content.slice(0, 6_000) };
   }
   throw new Error("网页重定向过多");
 }
@@ -144,11 +165,12 @@ function readKimiKey() {
 async function kimiSummary(pageInfo) {
   const response = await fetch(kimiEndpoint, {
     method: "POST",
-    signal: AbortSignal.timeout(90_000),
+    signal: AbortSignal.timeout(25_000),
     headers: { "Authorization": `Bearer ${readKimiKey()}`, "Content-Type": "application/json", "User-Agent": "reminder-app/1.4" },
     body: JSON.stringify({
       model: kimiModel,
       reasoning_effort: "low",
+      max_tokens: 220,
       messages: [
         { role: "system", content: "你是任务阅读助手。根据网页正文写简洁中文摘要，直接输出两部分：第一行是20字以内的标题；第二行是80到140字摘要。不要使用Markdown，不要虚构。" },
         { role: "user", content: `链接：${pageInfo.finalUrl}\n网页标题：${pageInfo.title}\n网页正文：${pageInfo.content}` }
@@ -174,21 +196,35 @@ async function summarizeTask(job) {
   const { userId, task } = job;
   const id = `${userId}:${task.id}`;
   let lastError;
+  let pageInfo;
   try {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const pageInfo = await fetchPage(task.text.trim());
+        // 网页读取成功后重试 Kimi 时直接复用，避免重复下载拖慢队列。
+        if (!pageInfo) pageInfo = await fetchPage(task.text.trim());
         const summary = await kimiSummary(pageInfo);
         updateSummary(userId, task.id, { summary, summaryStatus: "done", summaryError: "" });
         return;
       } catch (error) {
         lastError = error;
-        if (!retryableSummaryError(error) || attempt === 2) break;
+        if (!retryableSummaryError(error) || attempt === 1) break;
         await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1) ** 2));
       }
     }
-    updateSummary(userId, task.id, { summaryStatus: "error", summaryError: String(lastError?.message || lastError).slice(0, 240) });
+    if (pageInfo) {
+      updateSummary(userId, task.id, { summary: fallbackSummary(pageInfo), summaryStatus: "done", summaryError: "" });
+    } else {
+      updateSummary(userId, task.id, { summaryStatus: "error", summaryError: String(lastError?.message || lastError).slice(0, 240) });
+    }
   } finally { summarizing.delete(id); }
+}
+
+function fallbackSummary(pageInfo) {
+  const hostname = new URL(pageInfo.finalUrl).hostname.replace(/^www\./, "");
+  const title = String(pageInfo.title || hostname).replace(/\s+/g, " ").trim().slice(0, 40);
+  const content = String(pageInfo.content || "").replace(/\s+/g, " ").trim();
+  const excerpt = content.slice(0, 150) + (content.length > 150 ? "…" : "");
+  return `${title}\n${excerpt}`.trim().slice(0, 500);
 }
 
 function retryableSummaryError(error) {
@@ -201,7 +237,13 @@ async function drainSummaryQueue() {
   if (summaryWorkerActive) return;
   summaryWorkerActive = true;
   try {
-    while (summaryQueue.length) await summarizeTask(summaryQueue.shift());
+    const worker = async () => {
+      while (summaryQueue.length) {
+        const job = summaryQueue.shift();
+        if (job) await summarizeTask(job);
+      }
+    };
+    await Promise.all(Array.from({ length: summaryConcurrency }, worker));
   } finally { summaryWorkerActive = false; }
 }
 
@@ -394,4 +436,4 @@ function startServer() { const server = createServer().listen(port, "0.0.0.0", (
 
 if (require.main === module) startServer();
 
-module.exports = { mergeTasks, onlyUrl, privateAddress, retryableSummaryError, createServer };
+module.exports = { mergeTasks, onlyUrl, privateAddress, retryableSummaryError, fallbackSummary, xStatusId, createServer };

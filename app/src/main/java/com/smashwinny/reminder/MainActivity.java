@@ -352,8 +352,8 @@ public class MainActivity extends android.app.Activity {
         LinearLayout.LayoutParams cardLp = matchWrap();
         cardLp.setMargins(0, 0, 0, dp(9));
         card.setLayoutParams(cardLp);
-        if (isCobweb(task)) card.post(() -> {
-            SpiderWebDrawable web = new SpiderWebDrawable();
+        if (webStage(task) > 0) card.post(() -> {
+            SpiderWebDrawable web = new SpiderWebDrawable(webStage(task));
             web.setBounds(Math.max(0, card.getWidth() - dp(76)), 0, card.getWidth(), dp(76));
             card.getOverlay().add(web);
         });
@@ -385,8 +385,8 @@ public class MainActivity extends android.app.Activity {
                 copy.addView(video);
             }
         }
-        if (isCobweb(task)) {
-            TextView web = text("🕸  久置落灰 · 点击重新唤醒", 12, DOING_STRONG, Typeface.BOLD);
+        if (webStage(task) >= 3) {
+            TextView web = text("🕸  提醒框正在落灰 · 点击重新唤醒", 12, DOING_STRONG, Typeface.BOLD);
             web.setPadding(0, dp(7), 0, 0);
             copy.addView(web);
         }
@@ -443,8 +443,8 @@ public class MainActivity extends android.app.Activity {
         if (task.state == Task.DONE) return DONE_FILL;
         if (isStale(task)) return staleFill(task);
         int[] fills = {
-                Color.rgb(255, 205, 205), Color.rgb(255, 220, 220), Color.rgb(255, 232, 232),
-                Color.rgb(255, 240, 240), Color.rgb(255, 246, 246)};
+                Color.rgb(255, 151, 151), Color.rgb(255, 186, 186), Color.rgb(255, 215, 215),
+                Color.rgb(255, 235, 235), Color.rgb(255, 247, 247)};
         return fills[Math.max(0, Math.min(4, task.viewCount))];
     }
 
@@ -452,8 +452,8 @@ public class MainActivity extends android.app.Activity {
         if (task.state == Task.DONE) return DONE_STRONG;
         if (isStale(task)) return DOING_STRONG;
         int[] borders = {
-                Color.rgb(190, 44, 44), Color.rgb(205, 77, 77), Color.rgb(216, 107, 107),
-                Color.rgb(224, 137, 137), Color.rgb(230, 164, 164)};
+                Color.rgb(166, 24, 24), Color.rgb(199, 47, 47), Color.rgb(218, 91, 91),
+                Color.rgb(231, 137, 137), Color.rgb(239, 181, 181)};
         return borders[Math.max(0, Math.min(4, task.viewCount))];
     }
 
@@ -467,11 +467,22 @@ public class MainActivity extends android.app.Activity {
         return task.state != Task.DONE && System.currentTimeMillis() - anchor >= 30L * 24 * 60 * 60 * 1000;
     }
 
+    private int webStage(Task task) {
+        if (task.state == Task.DONE) return 0;
+        long anchor = task.lastViewedAt > 0 ? task.lastViewedAt : task.createdAt;
+        long days = Math.max(0, (System.currentTimeMillis() - anchor) / 86400000L);
+        if (days < 7) return 0;
+        if (days < 14) return 1;
+        if (days < 21) return 2;
+        if (days < 30) return 3;
+        return 4;
+    }
+
     private int staleFill(Task task) {
         long anchor = task.lastViewedAt > 0 ? task.lastViewedAt : task.createdAt;
         float days = (System.currentTimeMillis() - anchor) / 86400000f;
         float progress = Math.min(1f, Math.max(0f, (days - 7f) / 23f));
-        return blend(Color.rgb(255, 248, 218), Color.rgb(244, 215, 126), progress);
+        return blend(Color.rgb(255, 225, 137), Color.rgb(242, 172, 48), progress);
     }
 
     private int blend(int from, int to, float p) {
@@ -495,7 +506,7 @@ public class MainActivity extends android.app.Activity {
         panel.setBackground(roundRect(stateFill(task), 18, stateStrong(task), 1));
         scroll.addView(panel);
         if (wasCobweb) panel.post(() -> {
-            SpiderWebDrawable web = new SpiderWebDrawable();
+            SpiderWebDrawable web = new SpiderWebDrawable(4);
             web.setBounds(Math.max(0, panel.getWidth() - dp(92)), 0, panel.getWidth(), dp(92));
             panel.getOverlay().add(web);
         });
@@ -915,16 +926,18 @@ public class MainActivity extends android.app.Activity {
 
     private final class SpiderWebDrawable extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        SpiderWebDrawable() { paint.setColor(withAlpha(DOING_STRONG, 105)); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(dp(1)); }
+        private final int stage;
+        SpiderWebDrawable(int stage) { this.stage = Math.max(1, Math.min(4, stage)); paint.setColor(withAlpha(DOING_STRONG, 55 + stage * 24)); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(dp(stage >= 3 ? 2 : 1)); }
         @Override public void draw(Canvas canvas) {
             float right = getBounds().right, top = getBounds().top;
             float radius = Math.min(getBounds().width(), getBounds().height());
-            for (int i = 0; i <= 4; i++) {
-                double angle = Math.PI / 2 * i / 4.0;
+            int spokes = stage + 1;
+            for (int i = 0; i <= spokes; i++) {
+                double angle = Math.PI / 2 * i / (double) spokes;
                 canvas.drawLine(right, top, right - (float)Math.cos(angle) * radius, top + (float)Math.sin(angle) * radius, paint);
             }
-            for (int ring = 1; ring <= 3; ring++) {
-                float r = radius * ring / 4f;
+            for (int ring = 1; ring <= stage; ring++) {
+                float r = radius * ring / (stage + 1f);
                 canvas.drawArc(right - r, top - r, right + r, top + r, 90, 90, false, paint);
             }
         }

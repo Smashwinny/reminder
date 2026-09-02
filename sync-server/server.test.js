@@ -6,7 +6,7 @@ const testRoot = path.resolve(__dirname, "../tmp");
 fs.mkdirSync(testRoot, { recursive: true });
 process.env.DATA_DIR = fs.mkdtempSync(path.join(testRoot, "multi-user-test-"));
 process.env.REGISTRATION_INVITE_CODE = "test-invite-9284";
-const { mergeTasks, onlyUrl, privateAddress, retryableSummaryError, createServer } = require("./server");
+const { mergeTasks, onlyUrl, privateAddress, retryableSummaryError, fallbackSummary, xStatusId, createServer } = require("./server");
 const { createAuthStore } = require("./auth-store");
 
 test("merge keeps independently created tasks", () => {
@@ -51,6 +51,17 @@ test("summary retry only treats transient network and service errors as retryabl
   assert.equal(retryableSummaryError(new Error("The operation was aborted due to timeout")), true);
   assert.equal(retryableSummaryError(new Error("Kimi 返回 503")), true);
   assert.equal(retryableSummaryError(new Error("网页正文太少")), false);
+});
+
+test("summary fallback immediately provides a readable title and excerpt", () => {
+  const summary = fallbackSummary({ finalUrl: "https://www.example.com/a", title: " 示例文章 ", content: "这是一段在 AI 超时时仍可显示的网页正文。" });
+  assert.equal(summary, "示例文章\n这是一段在 AI 超时时仍可显示的网页正文。");
+});
+
+test("X and Twitter status links use their public post id", () => {
+  assert.equal(xStatusId(new URL("https://x.com/user/status/2094568904152744031?s=20")), "2094568904152744031");
+  assert.equal(xStatusId(new URL("https://twitter.com/user/status/123")), "123");
+  assert.equal(xStatusId(new URL("https://example.com/user/status/123")), "");
 });
 
 async function post(base, route, body, token) {
