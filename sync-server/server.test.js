@@ -68,6 +68,29 @@ async function post(base, route, body, token) {
   return fetch(base + route, { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
 }
 
+test('migrated sessions use a single task store while keeping response identity', async () => {
+  const store = createAuthStore(process.env.DATA_DIR, { inviteCode: process.env.REGISTRATION_INVITE_CODE });
+  const old = store.register('alias_old', 'password-old', process.env.REGISTRATION_INVITE_CODE);
+  const current = store.register('alias_current', 'password-new', process.env.REGISTRATION_INVITE_CODE);
+  const users = JSON.parse(fs.readFileSync(store.usersFile));
+  users.find(u => u.id === old.user.id).aliasOf = current.user.id;
+  fs.writeFileSync(store.usersFile, JSON.stringify(users));
+  const server = createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const upload = await post(base, '/api/sync', {mode:'upload', tasks:[{id:'alias-task',text:'migration',updatedAt:1}]}, old.token);
+    assert.equal(upload.status, 200);
+    for (const account of [old, current]) {
+      const result = await (await post(base, '/api/sync', {mode:'download',tasks:[]}, account.token)).json();
+      assert.equal(result.user.id, account.user.id);
+      assert.deepEqual(result.tasks.map(t=>t.id), ['alias-task']);
+    }
+    assert(fs.existsSync(path.join(process.env.DATA_DIR, 'users', current.user.id, 'tasks.json')));
+    assert(!fs.existsSync(path.join(process.env.DATA_DIR, 'users', old.user.id, 'tasks.json')));
+  } finally { await new Promise(resolve=>server.close(resolve)); }
+});
+
 test("accounts require invite and each user sees only their own tasks", async () => {
   const server = createServer();
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));

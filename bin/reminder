@@ -211,6 +211,20 @@ stop_server() {
   fi
 }
 
+# This checkout no longer owns production data. Never reconnect its old tunnel.
+if [[ -f "$PROJECT_ROOT/deploy/CLOUD_PRODUCTION" ]]; then
+  case "${1:-start}" in
+    start|open|internet)
+      echo "拾遗正式服务：https://reminder.geniusqi.com（阿里云唯一数据源）"
+      if [[ "${REMINDER_NO_OPEN:-0}" != "1" ]]; then xdg-open https://reminder.geniusqi.com >/dev/null 2>&1 || true; fi
+      exit 0 ;;
+    internet-daemon|install-autostart|restore)
+      echo "已禁止启动或恢复旧本机生产库；正式数据在阿里云 /opt/reminder。" >&2
+      exit 1 ;;
+    status|code) echo "正式服务：https://reminder.geniusqi.com；旧本机入口已停用。"; exit 0 ;;
+  esac
+fi
+
 case "${1:-start}" in
   stop) stop_server; exit 0 ;;
   backup) make_backup; exit $? ;;

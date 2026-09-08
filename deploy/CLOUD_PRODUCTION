@@ -1,0 +1,3 @@
+Production is https://reminder.geniusqi.com on Aliyun /opt/reminder.
+This marker prevents bin/reminder from starting the retired local tunnel/database.
+Do not remove it to troubleshoot cloud sync. Use isolated, non-public test data.

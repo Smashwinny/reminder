@@ -65,13 +65,13 @@ function createAuthStore(dataDir, options = {}) {
   }
   function login(usernameValue, password) {
     const username = cleanUsername(usernameValue);
-    const user = read(usersFile).find(item => item.username.toLowerCase() === username.toLowerCase());
+    const user = read(usersFile).find(item => !item.aliasOf && item.username.toLowerCase() === username.toLowerCase());
     if (!user || !verifyPassword(String(password || ""), user.passwordHash)) throw new Error("用户名或密码错误");
     return { user: publicUser(user), token: issueSession(user.id) };
   }
   function createPasswordReset(usernameValue, ttlMs = 30 * 60_000) {
     const username = cleanUsername(usernameValue);
-    const user = read(usersFile).find(item => item.username.toLowerCase() === username.toLowerCase());
+    const user = read(usersFile).find(item => !item.aliasOf && item.username.toLowerCase() === username.toLowerCase());
     if (!user) throw new Error("用户不存在");
     const token = crypto.randomBytes(32).toString("base64url");
     const now = Date.now();
@@ -95,7 +95,8 @@ function createAuthStore(dataDir, options = {}) {
     user.passwordHash = hashPassword(password);
     user.passwordChangedAt = now;
     atomicWrite(usersFile, users);
-    atomicWrite(sessionsFile, read(sessionsFile).filter(item => item.userId !== user.id && item.expiresAt > now));
+    const identities = new Set(users.filter(item => item.id === user.id || item.aliasOf === user.id).map(item => item.id));
+    atomicWrite(sessionsFile, read(sessionsFile).filter(item => !identities.has(item.userId) && item.expiresAt > now));
     atomicWrite(resetTokensFile, records.filter(item => item.tokenHash !== tokenHash && item.expiresAt > now));
     return { user: publicUser(user), token: issueSession(user.id) };
   }
@@ -115,7 +116,16 @@ function createAuthStore(dataDir, options = {}) {
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     atomicWrite(sessionsFile, read(sessionsFile).filter(item => item.tokenHash !== tokenHash));
   }
-  return { register, login, createPasswordReset, resetPassword, authenticate, logout, usersFile };
+  function storageUserId(userId) {
+    const users = read(usersFile);
+    const user = users.find(item => item.id === userId);
+    if (!user) throw new Error('Unknown storage identity');
+    if (!user.aliasOf) return user.id;
+    const target = users.find(item => item.id === user.aliasOf && !item.aliasOf);
+    if (!target) throw new Error('Invalid migration identity');
+    return target.id;
+  }
+  return { register, login, createPasswordReset, resetPassword, authenticate, logout, storageUserId, usersFile };
 }
 
 module.exports = { createAuthStore, hashPassword, verifyPassword, atomicWrite };

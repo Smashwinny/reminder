@@ -37,7 +37,7 @@ function recordAuthFailure(key) {
   if (authAttempts.size > 5000) authAttempts.delete(authAttempts.keys().next().value);
 }
 
-function userTasksFile(userId) { return path.join(usersDataDir, String(userId), "tasks.json"); }
+function userTasksFile(userId) { return path.join(usersDataDir, authStore.storageUserId(userId), "tasks.json"); }
 function readUserTasks(userId) {
   return readArray(userTasksFile(userId));
 }
@@ -272,6 +272,7 @@ function scanSummaries() {
   let users = [];
   try { users = JSON.parse(fs.readFileSync(authStore.usersFile, "utf8")); } catch { return; }
   for (const user of users) {
+    if (user.aliasOf) continue;
     try {
     const tasks = readUserTasks(user.id);
     if (scheduleSummaries(user.id, tasks)) writeUserTasks(user.id, tasks);
