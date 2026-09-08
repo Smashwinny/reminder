@@ -5,6 +5,7 @@ const dns = require("node:dns").promises;
 const net = require("node:net");
 const { createAuthStore } = require("./auth-store");
 const { readArray, writeArray, StorageError } = require('./safe-storage');
+const { createSummaryBudget } = require('./summary-budget');
 
 const port = Number(process.env.PORT || 8787);
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, "data");
@@ -14,6 +15,7 @@ const kimiKeyFile = process.env.KIMI_API_KEY_FILE || "/home/hulk/token_api/kimic
 const kimiEndpoint = process.env.KIMI_ENDPOINT || "https://api.kimi.com/coding/v1/chat/completions";
 const kimiModel = process.env.KIMI_MODEL || "k3";
 const dailySummaryLimit = Math.max(0, Number(process.env.KIMI_DAILY_SUMMARY_LIMIT || 20));
+const summaryBudget = createSummaryBudget(dataDir, { perUser: dailySummaryLimit, global: Number(process.env.KIMI_GLOBAL_DAILY_LIMIT || 200) });
 const summaryRetryDelayMs = 60_000;
 const summaryConcurrency = Math.max(1, Math.min(4, Number(process.env.SUMMARY_CONCURRENCY || 3)));
 const summarizing = new Set();
@@ -160,11 +162,13 @@ function readKimiKey() {
   return key;
 }
 
-async function kimiSummary(pageInfo) {
+async function kimiSummary(pageInfo, userId) {
+  const key = readKimiKey();
+  if (!summaryBudget.reserve(userId, 'api')) throw new Error('今日摘要额度已用完，使用网页摘录');
   const response = await fetch(kimiEndpoint, {
     method: "POST",
     signal: AbortSignal.timeout(25_000),
-    headers: { "Authorization": `Bearer ${readKimiKey()}`, "Content-Type": "application/json", "User-Agent": "reminder-app/1.4" },
+    headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json", "User-Agent": "reminder-app/1.4" },
     body: JSON.stringify({
       model: kimiModel,
       reasoning_effort: "low",
@@ -200,7 +204,7 @@ async function summarizeTask(job) {
       try {
         // 网页读取成功后重试 Kimi 时直接复用，避免重复下载拖慢队列。
         if (!pageInfo) pageInfo = await fetchPage(task.text.trim());
-        const summary = await kimiSummary(pageInfo);
+        const summary = await kimiSummary(pageInfo, userId);
         updateSummary(userId, task.id, { summary, summaryStatus: "done", summaryError: "" });
         return;
       } catch (error) {
@@ -251,22 +255,32 @@ async function drainSummaryQueue() {
 function scheduleSummaries(userId, tasks) {
   userId = authStore.storageUserId(userId);
   let changed = false;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  let dailyCount = tasks.filter(task => Number(task.summaryUpdatedAt || 0) >= today.getTime()).length;
   for (const task of tasks) {
     if (task.deleted || task.summary || !onlyUrl(task.text)) continue;
-    const retrying = task.summaryStatus === "error" || task.summaryStatus === "pending";
-    if (!retrying && dailyCount >= dailySummaryLimit) continue;
     const jobId = `${userId}:${task.id}`;
     if (summarizing.has(jobId)) continue;
     if (task.summaryStatus === "error" && Number(task.summaryUpdatedAt || 0) > Date.now() - summaryRetryDelayMs) continue;
+    if (summaryQueue.length >= 100) break;
+    let permitted;
+    try { permitted = summaryBudget.reserve(userId, 'job'); }
+    catch (error) {
+      // AI accounting must fail closed without blocking users from saving tasks.
+      console.error(new Date().toISOString(), 'summary budget unavailable', error.name);
+      break;
+    }
+    if (!permitted) {
+      task.summaryStatus = 'error';
+      task.summaryError = '今日摘要处理额度已用完，任务已保存，明日自动重试';
+      task.summaryUpdatedAt = Date.now();
+      changed = true;
+      continue;
+    }
     task.summaryStatus = "pending";
     task.summaryError = "";
     task.summaryUpdatedAt = Date.now();
     changed = true;
     summarizing.add(jobId);
     summaryQueue.push({ userId, task });
-    if (!retrying) dailyCount += 1;
   }
   if (summaryQueue.length) setImmediate(drainSummaryQueue);
   return changed;

@@ -37,7 +37,7 @@ make_backup() {
   # 账号体系数据（users.json / sessions.json / users/）与任务同等重要，必须一起备份
   data_dir="$(dirname "$DATA_FILE")"
   auth_items=()
-  for item in users.json sessions.json password-reset-tokens.json users .history; do
+  for item in users.json sessions.json password-reset-tokens.json summary-usage.json users .history; do
     [[ -e "$data_dir/$item" ]] && auth_items+=("$item")
   done
   if [[ ${#auth_items[@]} -gt 0 ]]; then
