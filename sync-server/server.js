@@ -1,8 +1,7 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
-const dns = require("node:dns").promises;
-const net = require("node:net");
+const { privateAddress, publicRequest } = require('./public-request');
 const { createAuthStore } = require("./auth-store");
 const { readArray, writeArray, StorageError } = require('./safe-storage');
 const { createSummaryBudget } = require('./summary-budget');
@@ -82,22 +81,6 @@ function onlyUrl(text) {
   } catch { return null; }
 }
 
-function privateAddress(address) {
-  if (net.isIPv4(address)) {
-    const [a, b] = address.split(".").map(Number);
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
-  }
-  const value = address.toLowerCase();
-  return value === "::1" || value === "::" || value.startsWith("fc") || value.startsWith("fd") || value.startsWith("fe8") || value.startsWith("fe9") || value.startsWith("fea") || value.startsWith("feb") || value.startsWith("::ffff:127.") || value.startsWith("::ffff:10.") || value.startsWith("::ffff:192.168.");
-}
-
-async function assertPublicUrl(url) {
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("不支持此链接");
-  const records = await dns.lookup(url.hostname, { all: true });
-  if (!records.length || records.some(record => privateAddress(record.address))) throw new Error("不允许访问内网地址");
-}
-
 function xStatusId(url) {
   const host = url.hostname.toLowerCase().replace(/^www\./, "");
   if (host !== "x.com" && host !== "twitter.com") return "";
@@ -107,7 +90,7 @@ function xStatusId(url) {
 async function fetchXPost(url) {
   const id = xStatusId(url);
   if (!id) return null;
-  const response = await fetch(`https://api.fxtwitter.com/status/${id}`, { signal: AbortSignal.timeout(8_000) });
+  const response = await publicRequest(`https://api.fxtwitter.com/status/${id}`, { timeoutMs:8000 });
   if (!response.ok) throw new Error(`X 内容接口返回 ${response.status}`);
   const tweet = (await response.json())?.tweet;
   const content = String(tweet?.text || "").replace(/\s+/g, " ").trim();
@@ -121,12 +104,7 @@ async function fetchPage(startUrl) {
   const xPost = await fetchXPost(url).catch(() => null);
   if (xPost) return xPost;
   for (let redirects = 0; redirects <= 4; redirects += 1) {
-    await assertPublicUrl(url);
-    const response = await fetch(url, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(10_000),
-      headers: { "User-Agent": "ReminderSummary/1.0", "Accept": "text/html,text/plain,application/xhtml+xml" }
-    });
+    const response = await publicRequest(url);
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
       if (!location) throw new Error("网页重定向缺少地址");
