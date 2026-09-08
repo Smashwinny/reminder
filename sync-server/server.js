@@ -327,6 +327,7 @@ function validateSync(body) {
 function readJson(request) {
   return new Promise((resolve, reject) => {
     let body = "";
+    request.setEncoding('utf8'); // Preserve Chinese/emoji split across network chunks.
     request.on("data", chunk => {
       body += chunk;
       if (body.length > 2_000_000) request.destroy();

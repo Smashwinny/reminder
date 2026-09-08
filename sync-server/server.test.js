@@ -68,6 +68,24 @@ async function post(base, route, body, token) {
   return fetch(base + route, { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
 }
 
+test('UTF-8 Chinese and emoji survive network chunks split inside characters', async () => {
+  const store=createAuthStore(process.env.DATA_DIR,{inviteCode:process.env.REGISTRATION_INVITE_CODE});
+  const account=store.register('utf8_test','password-test',process.env.REGISTRATION_INVITE_CODE);
+  const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  try {
+    const text='中文拾遗🕸灵感🌈';
+    const bytes=Buffer.from(JSON.stringify({tasks:[{id:'utf8-test',text,createdAt:1,updatedAt:1}]}));
+    const result=await new Promise((resolve,reject)=>{
+      const request=require('node:http').request({host:'127.0.0.1',port:server.address().port,path:'/api/sync',method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+account.token}},response=>{
+        response.setEncoding('utf8');let data='';response.on('data',s=>data+=s);response.on('end',()=>resolve({status:response.statusCode,body:JSON.parse(data)}));
+      });
+      request.on('error',reject);
+      (async()=>{for(const byte of bytes){request.write(Buffer.from([byte]));await new Promise(r=>setTimeout(r,1));}request.end();})().catch(reject);
+    });
+    assert.equal(result.status,200);assert.equal(result.body.tasks[0].text,text);
+  } finally {await new Promise(r=>server.close(r));}
+});
+
 test('migrated sessions use a single task store while keeping response identity', async () => {
   const store = createAuthStore(process.env.DATA_DIR, { inviteCode: process.env.REGISTRATION_INVITE_CODE });
   const old = store.register('alias_old', 'password-old', process.env.REGISTRATION_INVITE_CODE);
