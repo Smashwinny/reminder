@@ -25,15 +25,32 @@ mkdir -p "$RUNTIME_DIR"
 
 make_backup() {
   mkdir -p "$BACKUP_DIR"
-  if [[ ! -s "$DATA_FILE" ]]; then
-    echo "当前还没有可备份的任务数据。" >&2
+  stamp="$(date '+%Y%m%d-%H%M%S')"
+  did_backup=0
+  if [[ -s "$DATA_FILE" ]]; then
+    destination="$BACKUP_DIR/tasks-manual-$stamp.json"
+    cp -- "$DATA_FILE" "$destination"
+    chmod 600 "$destination"
+    echo "任务备份已保存：$destination"
+    did_backup=1
+  fi
+  # 账号体系数据（users.json / sessions.json / users/）与任务同等重要，必须一起备份
+  data_dir="$(dirname "$DATA_FILE")"
+  auth_items=()
+  for item in users.json sessions.json password-reset-tokens.json users .history; do
+    [[ -e "$data_dir/$item" ]] && auth_items+=("$item")
+  done
+  if [[ ${#auth_items[@]} -gt 0 ]]; then
+    auth_destination="$BACKUP_DIR/auth-manual-$stamp.tar.gz"
+    tar -czf "$auth_destination" -C "$data_dir" "${auth_items[@]}"
+    chmod 600 "$auth_destination"
+    echo "账号数据备份已保存：$auth_destination"
+    did_backup=1
+  fi
+  if [[ "$did_backup" -eq 0 ]]; then
+    echo "当前还没有可备份的数据。" >&2
     return 1
   fi
-  stamp="$(date '+%Y%m%d-%H%M%S')"
-  destination="$BACKUP_DIR/tasks-manual-$stamp.json"
-  cp -- "$DATA_FILE" "$destination"
-  chmod 600 "$destination"
-  echo "任务备份已保存：$destination"
 }
 
 list_backups() {
@@ -111,8 +128,8 @@ internet_daemon() {
     echo "缺少公网连接组件，请先运行一次 reminder internet。" >&2
     return 1
   fi
-  : > "$TUNNEL_LOG"
-  : > "$LOG_FILE"
+  touch "$TUNNEL_LOG"
+  touch "$LOG_FILE"
   rm -f "$TUNNEL_URL_FILE"
   node_path="${REMINDER_NODE:-$(command -v node)}"
   env PORT="$PORT" SYNC_CODE="$daemon_code" "$node_path" "$SERVER" >>"$LOG_FILE" 2>&1 &
@@ -268,7 +285,7 @@ if ! server_ready; then
       --setenv="PORT=$PORT" --setenv="SYNC_CODE=$SYNC_CODE" \
       "$node_bin" "$SERVER"
   else
-    nohup env PORT="$PORT" SYNC_CODE="$SYNC_CODE" "$node_bin" "$SERVER" >"$LOG_FILE" 2>&1 &
+    nohup env PORT="$PORT" SYNC_CODE="$SYNC_CODE" "$node_bin" "$SERVER" >>"$LOG_FILE" 2>&1 &
     echo "$!" > "$PID_FILE"
   fi
   for _ in 1 2 3 4 5 6 7 8 9 10; do

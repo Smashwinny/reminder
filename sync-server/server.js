@@ -4,6 +4,7 @@ const path = require("node:path");
 const dns = require("node:dns").promises;
 const net = require("node:net");
 const { createAuthStore } = require("./auth-store");
+const { readArray, writeArray } = require('./safe-storage');
 
 const port = Number(process.env.PORT || 8787);
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, "data");
@@ -38,14 +39,11 @@ function recordAuthFailure(key) {
 
 function userTasksFile(userId) { return path.join(usersDataDir, String(userId), "tasks.json"); }
 function readUserTasks(userId) {
-  try { return JSON.parse(fs.readFileSync(userTasksFile(userId), "utf8")); } catch { return []; }
+  return readArray(userTasksFile(userId));
 }
 function writeUserTasks(userId, tasks) {
   const file = userTasksFile(userId);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const next = `${file}.next`;
-  fs.writeFileSync(next, JSON.stringify(tasks, null, 2), { mode: 0o600 });
-  fs.renameSync(next, file);
+  writeArray(file, tasks);
 }
 
 function authenticatedUser(request) { return authStore.authenticate(request.headers.authorization); }
@@ -274,8 +272,10 @@ function scanSummaries() {
   let users = [];
   try { users = JSON.parse(fs.readFileSync(authStore.usersFile, "utf8")); } catch { return; }
   for (const user of users) {
+    try {
     const tasks = readUserTasks(user.id);
     if (scheduleSummaries(user.id, tasks)) writeUserTasks(user.id, tasks);
+    } catch (error) { console.error(new Date().toISOString(), 'summary storage unavailable', error.name); }
   }
 }
 
@@ -339,16 +339,47 @@ button{border:0;border-radius:11px;padding:10px 15px;font:700 13px inherit;curso
 </main><script>
 let tasks=[],stableOrder=[],detailTask=null,query='',authToken=localStorage.getItem('reminder-auth-token')||'';const DAY=86400000;function ageDays(t){return(Date.now()-Number(t.lastViewedAt||t.createdAt||Date.now()))/DAY}function stale(t){return t.state!==3&&ageDays(t)>=7}function cobweb(t){return t.state!==3&&ageDays(t)>=30}function stateName(t){if(t.state===3)return'已完成';if(cobweb(t))return'🕸 久未查看';if(stale(t))return'久未查看';if(t.state===1)return'进行中 · 已查看 '+(t.viewCount||0)+' 次';return(t.viewCount||0)?'已查看 '+t.viewCount+' 次':'未查看'}function visual(t){if(t.state===3)return['#ddf3e2','#2b7e46'];if(stale(t)){const p=Math.max(0,Math.min(1,(ageDays(t)-7)/23));return['rgb('+(255-11*p)+','+(248-33*p)+','+(218-92*p)+')','#a07310']}const fills=['#ffcdcd','#ffdcdc','#ffe8e8','#fff0f0','#fff6f6'],borders=['#be2c2c','#cd4d4d','#d86b6b','#e08989','#e6a4a4'],i=Math.max(0,Math.min(4,t.viewCount||0));return[fills[i],borders[i]]}
 function mergeDownload(incoming){const map=new Map(tasks.map(t=>[String(t.id),t]));for(const remote of incoming){const local=map.get(String(remote.id));if(!local){map.set(String(remote.id),remote);continue}if(Number(remote.updatedAt||0)>Number(local.updatedAt||0)){if(Number(local.summaryUpdatedAt||0)>Number(remote.summaryUpdatedAt||0))Object.assign(remote,{summary:local.summary,summaryStatus:local.summaryStatus,summaryError:local.summaryError,summaryUpdatedAt:local.summaryUpdatedAt});map.set(String(remote.id),remote)}else if(Number(remote.summaryUpdatedAt||0)>Number(local.summaryUpdatedAt||0))Object.assign(local,{summary:remote.summary,summaryStatus:remote.summaryStatus,summaryError:remote.summaryError,summaryUpdatedAt:remote.summaryUpdatedAt})}tasks=[...map.values()]}
-async function sync(mode='merge'){if(!authToken){showAuth();throw new Error('请先登录')}document.querySelector('#status').textContent=mode==='download'?'正在接收…':'正在同步…';const response=await fetch('/api/sync',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+authToken},body:JSON.stringify({mode,tasks})});if(response.status===401){authToken='';localStorage.removeItem('reminder-auth-token');showAuth();throw new Error('登录已过期')}if(!response.ok)throw new Error((await response.json().catch(()=>({}))).error||'同步失败');const result=await response.json(),incoming=result.tasks;document.querySelector('#account-label').textContent='已登录：'+result.user.username;if(mode==='download')mergeDownload(incoming);else tasks=incoming;render();document.querySelector('#status').textContent='已同步 · '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});}
+let syncQueue=Promise.resolve(),loadedAccount='';
+function persistTasks(){if(loadedAccount)localStorage.setItem('reminder-tasks-'+loadedAccount,JSON.stringify(tasks))}
+function sync(mode='merge'){
+  const token=authToken;
+  try{persistTasks()}catch(error){document.querySelector('#status').textContent='浏览器保存失败，请勿关闭页面';return Promise.reject(error)}
+  const job=syncQueue.catch(()=>{}).then(async()=>{
+    if(token!==authToken)return;
+    if(!token){showAuth();throw new Error('请先登录')}
+    document.querySelector('#status').textContent='正在同步…';
+    const sent=JSON.parse(JSON.stringify(tasks));
+    const response=await fetch('/api/sync',{method:'POST',signal:AbortSignal.timeout(20000),headers:{'content-type':'application/json','authorization':'Bearer '+token},body:JSON.stringify({mode:loadedAccount?'merge':'download',tasks:sent})});
+    if(token!==authToken)return;
+    if(response.status===401){authToken='';localStorage.removeItem('reminder-auth-token');showAuth();throw new Error('登录已过期，本地任务已保留')}
+    if(!response.ok)throw new Error('同步失败 HTTP '+response.status+'，本地任务已保留');
+    const result=await response.json(),incoming=result.tasks;
+    if(token!==authToken)return;
+    if(!Array.isArray(incoming)||!result.user?.id)throw new Error('同步响应不完整');
+    if(loadedAccount&&loadedAccount!==result.user.id)throw new Error('账号身份不一致，已停止同步');
+    if(loadedAccount){const ids=new Set(incoming.map(t=>String(t.id)));if(sent.some(t=>!ids.has(String(t.id))))throw new Error('云端缺少本地任务，已停止覆盖')}
+    else {
+      const cached=localStorage.getItem('reminder-tasks-'+result.user.id);
+      const restored=cached?JSON.parse(cached):[];
+      if(!Array.isArray(restored))throw new Error('浏览器任务备份损坏，已停止覆盖');
+      tasks=restored;loadedAccount=result.user.id;
+    }
+    mergeDownload(incoming);persistTasks();render();
+    document.querySelector('#account-label').textContent='已登录：'+result.user.username;
+    document.querySelector('#status').textContent='已接收云端 '+incoming.filter(t=>!t.deleted).length+' 项 · 本地 '+tasks.filter(t=>!t.deleted).length+' 项';
+  });
+  syncQueue=job;job.catch(error=>{if(token===authToken)document.querySelector('#status').textContent=error.message});return job;
+}
 function orderedTasks(){const active=tasks.filter(t=>!t.deleted&&((t.text||'')+' '+(t.summary||'')).toLowerCase().includes(query));if(!stableOrder.length)stableOrder=active.slice().sort((a,b)=>(a.state===3)-(b.state===3)||(a.viewCount||0)-(b.viewCount||0)||b.createdAt-a.createdAt).map(t=>String(t.id));for(const t of active)if(!stableOrder.includes(String(t.id)))stableOrder.unshift(String(t.id));return active.sort((a,b)=>stableOrder.indexOf(String(a.id))-stableOrder.indexOf(String(b.id)))}
 function render(){const all=orderedTasks(),active=all.filter(t=>t.state!==3),done=all.filter(t=>t.state===3);document.querySelector('#summary').textContent=all.length?'任务 '+all.length+' 项 · 已完成 '+done.length+' 项':'任务列表';renderGroup(document.querySelector('#tasks'),active,query?'未找到未完成任务':'没有未完成任务');renderGroup(document.querySelector('#completed'),done,query?'未找到已完成任务':'完成的任务会收在这里')}
 function renderGroup(root,items,empty){root.innerHTML=items.length?'':'<div class="empty">'+empty+'</div>';for(const t of items){const el=document.createElement('article'),colors=visual(t);el.className='task state-'+t.state;el.style.background=colors[0];el.style.borderColor=colors[1];el.innerHTML='<div class="copy"><h3></h3><p>'+stateName(t)+' · '+new Date(t.createdAt).toLocaleString()+'</p>'+(cobweb(t)?'<div class="cobweb">🕸 久置落灰 · 点击重新唤醒</div>':'')+'<div class="ai"></div></div><button class="complete" title="'+(t.state===3?'恢复任务':'标记完成')+'">'+(t.state===3?'✓':'')+'</button><button class="delete" title="删除任务">删除</button>';el.querySelector('h3').textContent=t.text.split('\\n')[0];const ai=el.querySelector('.ai');if(t.summary){ai.className='ai ai-summary';ai.textContent=t.summary}else if(t.summaryStatus==='pending'){ai.className='ai ai-status';ai.textContent='摘要生成中…'}else if(t.summaryStatus==='error'){ai.className='ai ai-status';ai.textContent='链接已保存 · 摘要稍后自动补全'}el.querySelector('.copy').onclick=()=>showDetail(t);el.querySelector('.complete').onclick=async()=>{t.state=t.state===3?2:3;t.updatedAt=Date.now();await sync('upload')};el.querySelector('.delete').onclick=async()=>{if(confirm('删除这项任务？')){t.deleted=true;t.updatedAt=Date.now();await sync('upload')}};root.appendChild(el)}}
 function updateDetail(){const t=detailTask,card=document.querySelector('#detail-card'),colors=visual(t);card.className='detail-card state-'+t.state;card.style.background=colors[0];card.style.borderColor=colors[1];document.querySelector('#detail-meta').textContent=stateName(t)+' · '+new Date(t.createdAt).toLocaleString();document.querySelector('#detail-start').textContent=t.state===1?'进行中':t.state===3?'恢复任务':'开始任务';document.querySelector('#detail-done').textContent=t.state===3?'恢复为未完成':'标记完成'}
 async function showDetail(t){detailTask=t;if(t.state!==3){t.viewCount=stale(t)?0:Math.min(4,(t.viewCount||0)+1);t.lastViewedAt=t.updatedAt=Date.now()}document.querySelector('#detail-text').textContent=t.text;document.querySelector('#detail-summary').textContent=t.summary||'';const open=document.querySelector('#detail-open');open.hidden=!/^https?:\\/\\/\\S+$/.test(t.text.trim());open.onclick=()=>window.open(t.text.trim(),'_blank','noopener');updateDetail();document.querySelector('#detail').showModal();if(t.state!==3)await sync('upload')}
 document.querySelector('#detail-start').onclick=async()=>{if(!detailTask)return;detailTask.state=detailTask.state===3?2:1;detailTask.updatedAt=Date.now();updateDetail();await sync('upload')};document.querySelector('#detail-done').onclick=async()=>{if(!detailTask)return;detailTask.state=detailTask.state===3?2:3;detailTask.updatedAt=Date.now();updateDetail();await sync('upload')};document.querySelector('#detail-delete').onclick=async()=>{if(detailTask&&confirm('删除这项任务？')){detailTask.deleted=true;detailTask.updatedAt=Date.now();await sync('upload');document.querySelector('#detail').close()}};document.querySelector('#detail-close').onclick=()=>document.querySelector('#detail').close();document.querySelector('#detail').onclose=()=>{detailTask=null;render()};
-async function add(){const input=document.querySelector('#draft');const text=input.value.trim();if(!text)return;const now=Date.now();tasks.unshift({id:crypto.randomUUID(),text,createdAt:now,updatedAt:now,reminderAt:0,state:0,deleted:false});input.value='';await sync('upload')}
+async function add(){if(!loadedAccount||!authToken){showAuth('请先登录并接收账号任务');return}const input=document.querySelector('#draft');const text=input.value.trim();if(!text)return;const now=Date.now();tasks.unshift({id:crypto.randomUUID(),text,createdAt:now,updatedAt:now,reminderAt:0,state:0,deleted:false});try{persistTasks()}catch(error){document.querySelector('#status').textContent='浏览器保存失败，请保留输入内容';return}input.value='';render();await sync('upload')}
 function showAuth(message=''){document.querySelector('#auth-error').textContent=message;const dialog=document.querySelector('#auth');if(!dialog.open)dialog.showModal()}
-async function authenticate(kind){const username=document.querySelector('#auth-user').value.trim(),password=document.querySelector('#auth-password').value,inviteCode=document.querySelector('#auth-invite').value.trim();document.querySelector('#auth-error').textContent='正在验证…';try{const response=await fetch('/api/auth/'+kind,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username,password,inviteCode})}),result=await response.json();if(!response.ok)throw new Error(result.error||'登录失败');authToken=result.token;localStorage.setItem('reminder-auth-token',authToken);document.querySelector('#account-label').textContent='已登录：'+result.user.username;document.querySelector('#auth').close();tasks=[];stableOrder=[];await sync('download')}catch(error){showAuth(error.message)}}
+let authenticating=false;
+async function authenticate(kind){if(authenticating)return;authenticating=true;const username=document.querySelector('#auth-user').value.trim(),password=document.querySelector('#auth-password').value,inviteCode=document.querySelector('#auth-invite').value.trim();document.querySelector('#auth-error').textContent='正在验证…';try{persistTasks();const response=await fetch('/api/auth/'+kind,{method:'POST',signal:AbortSignal.timeout(20000),headers:{'content-type':'application/json'},body:JSON.stringify({username,password,inviteCode})}),result=await response.json();if(!response.ok)throw new Error(result.error||'登录失败');persistTasks();authToken=result.token;localStorage.setItem('reminder-auth-token',authToken);document.querySelector('#account-label').textContent='已登录：'+result.user.username;document.querySelector('#auth').close();tasks=[];stableOrder=[];loadedAccount='';await sync('download')}catch(error){showAuth(error.message)}finally{authenticating=false}}
 document.querySelector('#login').onclick=()=>authenticate('login');document.querySelector('#register').onclick=()=>authenticate('register');
 document.querySelector('#add').onclick=add;document.querySelector('#refresh').onclick=()=>sync('download').catch(e=>document.querySelector('#status').textContent=e.message);document.querySelector('#draft').onkeydown=e=>{if(e.ctrlKey&&e.key==='Enter')add()};document.querySelector('#search').oninput=e=>{query=e.target.value.trim().toLowerCase();render()};sync('download').catch(e=>document.querySelector('#status').textContent=e.message);setInterval(()=>{if(tasks.some(t=>t.summaryStatus==='pending'))sync('download').catch(()=>{})},5000);
 </script></body></html>`;
@@ -360,6 +391,7 @@ const status=document.querySelector('#status'),button=document.querySelector('#s
 </script></body></html>`;
 
 function createServer() { return http.createServer(async (request, response) => {
+ try {
   if (request.method === "GET" && request.url === "/api/healthz") {
     return sendJson(response, 200, { ok: true, service: "reminder", storage: "portable-json-v1" });
   }
@@ -423,6 +455,11 @@ function createServer() { return http.createServer(async (request, response) => 
     }
   }
   sendJson(response, 404, { error: "not found" });
+ } catch (error) {
+   console.error(new Date().toISOString(), 'request failed', request.method, request.url, error.name);
+   if (!response.headersSent) sendJson(response, 503, { error: '存储暂不可用，已停止操作，请联系管理员' });
+   else response.end();
+ }
 }); }
 
 function startServer() { const server = createServer().listen(port, "0.0.0.0", () => {

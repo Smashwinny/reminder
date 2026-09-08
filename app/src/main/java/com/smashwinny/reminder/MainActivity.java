@@ -93,6 +93,8 @@ public class MainActivity extends android.app.Activity {
     private TextView syncStatus;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean syncInProgress;
+    private boolean localReadFailed;
+    private int authenticationGeneration;
     private boolean syncAgain;
     private int summaryPollAttempts;
     private final Runnable automaticSync = () -> {
@@ -672,19 +674,24 @@ public class MainActivity extends android.app.Activity {
         String userId = getSharedPreferences(PREFS, MODE_PRIVATE).getString("current_user_id", "");
         String raw = getSharedPreferences(PREFS, MODE_PRIVATE).getString(userId.isEmpty() ? "items" : "items_" + userId, "[]");
         try { JSONArray array = new JSONArray(raw); for (int i = 0; i < array.length(); i++) tasks.add(Task.fromJson(array.getJSONObject(i))); }
-        catch (JSONException ignored) { Toast.makeText(this, "任务数据读取失败", Toast.LENGTH_LONG).show(); }
+        catch (JSONException ignored) { localReadFailed = true; Toast.makeText(this, "任务数据读取失败，已暂停保存与同步，请先恢复备份", Toast.LENGTH_LONG).show(); }
     }
 
     private void save() {
-        saveLocalOnly();
+        if (!saveLocalOnly()) return;
         scheduleAutoSync(AUTO_SYNC_DELAY_MS);
     }
 
-    private void saveLocalOnly() {
+    private boolean saveLocalOnly() {
+        if (localReadFailed) return false;
         JSONArray array = new JSONArray();
         String userId = getSharedPreferences(PREFS, MODE_PRIVATE).getString("current_user_id", "");
-        try { for (Task task : tasks) array.put(task.toJson()); getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(userId.isEmpty() ? "items" : "items_" + userId, array.toString()).apply(); }
-        catch (JSONException ignored) { Toast.makeText(this, "任务保存失败", Toast.LENGTH_LONG).show(); }
+        try {
+            for (Task task : tasks) array.put(task.toJson());
+            if (getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(userId.isEmpty() ? "items" : "items_" + userId, array.toString()).commit()) return true;
+        } catch (JSONException ignored) { }
+        Toast.makeText(this, "任务保存失败，请勿关闭应用，检查存储空间后重试", Toast.LENGTH_LONG).show();
+        return false;
     }
 
     /** 在任何账号切换或整表替换前，先同步落盘一份可人工恢复的滚动快照。 */
@@ -695,47 +702,51 @@ public class MainActivity extends android.app.Activity {
             catch (JSONException ignored) { return false; }
         }
         android.content.SharedPreferences preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
-        int slot = Math.floorMod(preferences.getInt("recovery_snapshot_slot", -1) + 1, 3);
+        String bank = "recovery_" + preferences.getString("current_user_id", "local") + "_" + reason + "_";
+        int slot = Math.floorMod(preferences.getInt(bank + "slot", -1) + 1, 3);
         boolean saved = preferences.edit()
-                .putInt("recovery_snapshot_slot", slot)
-                .putString("recovery_snapshot_" + slot, array.toString())
-                .putString("recovery_snapshot_reason_" + slot, reason)
-                .putLong("recovery_snapshot_at_" + slot, System.currentTimeMillis())
-                .putString("recovery_snapshot_user_" + slot, preferences.getString("current_user_id", ""))
+                .putInt(bank + "slot", slot)
+                .putString(bank + slot, array.toString())
+                .putLong(bank + "at_" + slot, System.currentTimeMillis())
                 .commit();
         if (!saved) Toast.makeText(this, "本地安全快照保存失败，已停止覆盖数据", Toast.LENGTH_LONG).show();
         return saved;
     }
 
-    private void switchLocalAccount(String userId, String username, String server) {
+    private boolean switchLocalAccount(String userId, String username, String server, String token) {
+        if (localReadFailed) return false;
         android.content.SharedPreferences preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         String previous = preferences.getString("current_user_id", "");
-        if (userId.equals(previous)) return;
-        if (previous.isEmpty()) {
-            preferences.edit().putString("current_user_id", userId).apply();
-            saveLocalOnly(); // 首次登录：现有个人版数据归属第一个账号
-            return;
-        }
         String previousUsername = preferences.getString("username", "").trim();
         String previousServer = preferences.getString("sync_url", "").trim().replaceAll("/+$", "");
-        boolean sameAccountRecreated = !previousUsername.isEmpty() && previousUsername.equals(username.trim())
+        boolean sameAccountRecreated = !previousUsername.isEmpty() && previousUsername.equalsIgnoreCase(username.trim())
                 && !previousServer.isEmpty() && previousServer.equals(server);
-        saveLocalOnly();
-        if (!snapshotLocal("before_account_switch")) return;
+        if (!saveLocalOnly()) return false;
+        if (!snapshotLocal("before_account_switch")) return false;
         List<Task> previousTasks = new ArrayList<>(tasks);
-        for (Task task : tasks) cancelAlarm(task);
-        tasks.clear(); stableOrder.clear();
         List<Task> targetTasks = new ArrayList<>();
         String raw = preferences.getString("items_" + userId, "[]");
         try { JSONArray array = new JSONArray(raw); for (int i = 0; i < array.length(); i++) targetTasks.add(Task.fromJson(array.getJSONObject(i))); }
-        catch (JSONException ignored) { Toast.makeText(this, "该账号本地数据读取失败", Toast.LENGTH_LONG).show(); }
-        if (sameAccountRecreated) {
-            tasks.addAll(previousTasks);
-            mergeIntoLocal(targetTasks);
-        } else tasks.addAll(targetTasks);
-        preferences.edit().putString("current_user_id", userId).apply();
-        if (sameAccountRecreated) saveLocalOnly();
+        catch (JSONException ignored) { Toast.makeText(this, "该账号本地数据读取失败，已停止登录", Toast.LENGTH_LONG).show(); return false; }
+        List<Task> nextTasks = new ArrayList<>();
+        if (previous.isEmpty() || userId.equals(previous) || sameAccountRecreated) {
+            nextTasks.addAll(previousTasks);
+            TaskMerge.merge(nextTasks, targetTasks);
+        } else nextTasks.addAll(targetTasks);
+        JSONArray next = new JSONArray();
+        try { for (Task task : nextTasks) next.put(task.toJson()); }
+        catch (JSONException error) { return false; }
+        if (!preferences.edit().putString("items_" + userId, next.toString())
+                .putString("current_user_id", userId).putString("sync_url", server)
+                .putString("username", username).putString("auth_token", token)
+                .putLong("last_sync_at", 0).remove("sync_code").commit()) {
+            Toast.makeText(this, "登录状态保存失败，已停止同步", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        for (Task task : tasks) cancelAlarm(task);
+        tasks.clear(); tasks.addAll(nextTasks); stableOrder.clear();
         restoreFutureAlarms(); refreshList();
+        return true;
     }
 
     private void scheduleAutoSync(long delayMs) {
@@ -794,6 +805,7 @@ public class MainActivity extends android.app.Activity {
     }
 
     private void authenticate(String urlValue, String usernameValue, String password, String inviteCode, boolean register, AlertDialog dialog) {
+        final int generation = ++authenticationGeneration;
         String server = urlValue.trim().replaceAll("/+$", "");
         String username = usernameValue.trim();
         if (server.isEmpty() || username.isEmpty() || password.length() < 8) {
@@ -817,9 +829,17 @@ public class MainActivity extends android.app.Activity {
                 String token = result.getString("token");
                 String userId = result.getJSONObject("user").getString("id");
                 runOnUiThread(() -> {
-                    switchLocalAccount(userId, username, server);
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("sync_url", server).putString("username", username).putString("auth_token", token).remove("sync_code").apply();
+                    Runnable finishLogin = () -> {
+                    if (generation != authenticationGeneration) return;
+                    if (!switchLocalAccount(userId, username, server, token)) return;
                     dialog.dismiss(); Toast.makeText(this, register ? "注册成功" : "登录成功", Toast.LENGTH_SHORT).show(); syncNow(server, token, "merge", false);
+                    };
+                    String previous = getSharedPreferences(PREFS, MODE_PRIVATE).getString("current_user_id", "");
+                    if (!previous.isEmpty() && !previous.equals(userId)) {
+                        new AlertDialog.Builder(this).setTitle("账号身份发生变化")
+                            .setMessage("服务器返回了不同的账号身份。同一地址、同名账号的本地任务将合并上传；其他账号将切换到各自任务。请确认目标账号属于你。取消会保留当前任务和登录状态。")
+                            .setNegativeButton("取消", null).setPositiveButton("确认继续", (d, w) -> finishLogin.run()).show();
+                    } else finishLogin.run();
                 });
             } catch (Exception error) { runOnUiThread(() -> Toast.makeText(this, "认证失败：" + error.getMessage(), Toast.LENGTH_LONG).show()); }
             finally { if (connection != null) connection.disconnect(); }
@@ -827,11 +847,18 @@ public class MainActivity extends android.app.Activity {
     }
 
     private void syncNow(String server, String token, String mode, boolean silent) {
+        if (localReadFailed) { if (syncStatus != null) syncStatus.setText("本地数据读取失败 · 已停止同步，请恢复备份"); return; }
         if (!server.startsWith("http://") && !server.startsWith("https://")) {
             if (!silent) Toast.makeText(this, "云端地址需要以 http:// 或 https:// 开头", Toast.LENGTH_LONG).show();
             return;
         }
         if (syncInProgress) { syncAgain = true; return; }
+        // Capture immutable request data on the UI thread; background iteration races with edits.
+        final JSONArray local = new JSONArray();
+        final Set<String> sentIds = new HashSet<>();
+        final String requestUser = getSharedPreferences(PREFS, MODE_PRIVATE).getString("current_user_id", "");
+        try { for (Task task : tasks) { local.put(task.toJson()); sentIds.add(task.id); } }
+        catch (JSONException error) { Toast.makeText(this, "任务读取失败，已停止同步", Toast.LENGTH_LONG).show(); return; }
         syncInProgress = true;
         if (syncStatus != null) syncStatus.setText("正在同步…");
         if (!silent) Toast.makeText(this, "正在同步…", Toast.LENGTH_SHORT).show();
@@ -839,9 +866,6 @@ public class MainActivity extends android.app.Activity {
             HttpURLConnection connection = null;
             try {
                 JSONObject body = new JSONObject().put("mode", mode);
-                JSONArray local = new JSONArray();
-                Set<String> sentIds = new HashSet<>();
-                for (Task task : tasks) { local.put(task.toJson()); sentIds.add(task.id); }
                 body.put("tasks", local);
                 byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
                 connection = (HttpURLConnection) new URL(server + "/api/sync").openConnection();
@@ -869,7 +893,10 @@ public class MainActivity extends android.app.Activity {
                     return;
                 }
                 if (status != 200) throw new IllegalStateException(new JSONObject(response.toString()).optString("error", "服务器错误 " + status));
-                JSONArray merged = new JSONObject(response.toString()).getJSONArray("tasks");
+                JSONObject result = new JSONObject(response.toString());
+                if (!requestUser.equals(result.getJSONObject("user").getString("id")))
+                    throw new IllegalStateException("云端账号身份不一致，已停止同步");
+                JSONArray merged = result.getJSONArray("tasks");
                 List<Task> received = new ArrayList<>();
                 for (int i = 0; i < merged.length(); i++) received.add(Task.fromJson(merged.getJSONObject(i)));
                 if ("merge".equals(mode)) {
@@ -886,16 +913,19 @@ public class MainActivity extends android.app.Activity {
                             if (syncStatus != null) syncStatus.setText("安全快照失败 · 已拒绝覆盖本地任务");
                             return;
                         }
-                        tasks.clear();
-                        tasks.addAll(received);
+                        // Preserve tasks created/edited while this request was in flight.
+                        mergeIntoLocal(received);
                     } else if ("download".equals(mode)) {
                         mergeIntoLocal(received);
                     }
-                    saveLocalOnly();
+                    if (!saveLocalOnly()) {
+                        if (syncStatus != null) syncStatus.setText("本地保存失败 · 尚未完成同步");
+                        return;
+                    }
                     restoreFutureAlarms();
                     long syncedAt = System.currentTimeMillis();
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit().putLong("last_sync_at", syncedAt).apply();
-                    if (syncStatus != null) syncStatus.setText(syncStatusText());
+                    if (syncStatus != null) syncStatus.setText(syncAgain ? "本地新变更待同步…" : syncStatusText());
                     refreshList();
                     boolean waitingForSummary = false;
                     for (Task task : received) if ("pending".equals(task.summaryStatus)) { waitingForSummary = true; break; }
@@ -909,7 +939,8 @@ public class MainActivity extends android.app.Activity {
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> {
-                    if (syncStatus != null) syncStatus.setText("同步失败 · 点击右上角重试");
+                    if (!token.equals(getSharedPreferences(PREFS, MODE_PRIVATE).getString("auth_token", ""))) return;
+                    if (syncStatus != null) syncStatus.setText("同步失败 · 本地任务已保留 · " + error.getMessage());
                     if (!silent) Toast.makeText(this, "同步失败：" + error.getMessage(), Toast.LENGTH_LONG).show();
                 });
             } finally {
@@ -930,22 +961,7 @@ public class MainActivity extends android.app.Activity {
     }
 
     private void mergeIntoLocal(List<Task> received) {
-        for (Task remote : received) {
-            int localIndex = -1;
-            for (int i = 0; i < tasks.size(); i++) {
-                if (tasks.get(i).id.equals(remote.id)) { localIndex = i; break; }
-            }
-            if (localIndex < 0) tasks.add(remote);
-            else {
-                Task local = tasks.get(localIndex);
-                if (remote.updatedAt > local.updatedAt) {
-                    if (local.summaryUpdatedAt > remote.summaryUpdatedAt) copySummary(local, remote);
-                    tasks.set(localIndex, remote);
-                } else if (remote.summaryUpdatedAt > local.summaryUpdatedAt) {
-                    copySummary(remote, local);
-                }
-            }
-        }
+        TaskMerge.merge(tasks, received);
     }
 
     private void copySummary(Task source, Task target) {

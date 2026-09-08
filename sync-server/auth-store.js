@@ -1,14 +1,12 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { readArray, writeArray } = require('./safe-storage');
 
 const USER_RE = /^[a-zA-Z0-9_\u4e00-\u9fff.-]{3,32}$/u;
 
 function atomicWrite(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const next = `${file}.next`;
-  fs.writeFileSync(next, JSON.stringify(value, null, 2), { mode: 0o600 });
-  fs.renameSync(next, file);
+  writeArray(file, value);
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
@@ -32,7 +30,11 @@ function createAuthStore(dataDir, options = {}) {
   const sessionTtlMs = Number(options.sessionTtlMs || 30 * 86400_000);
 
   function read(file) {
-    try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return []; }
+    if (file === usersFile && !fs.existsSync(file) &&
+        (fs.existsSync(sessionsFile) || fs.existsSync(path.join(dataDir, 'users')))) {
+      throw new Error('账号库缺失，已停止注册和登录，请恢复备份');
+    }
+    return readArray(file);
   }
   function publicUser(user) { return { id: user.id, username: user.username, createdAt: user.createdAt }; }
   function cleanUsername(value) { return String(value || "").trim(); }

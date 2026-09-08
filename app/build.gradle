@@ -1,7 +1,7 @@
 plugins { id 'com.android.application' }
 
-def otaVersionCode = providers.gradleProperty('VERSION_CODE').orElse('18')
-def otaVersionName = providers.gradleProperty('VERSION_NAME').orElse('2.3.1')
+def otaVersionCode = providers.gradleProperty('VERSION_CODE').orElse('21')
+def otaVersionName = providers.gradleProperty('VERSION_NAME').orElse('2.3.4')
 def releaseSigningFile = System.getenv('REMINDER_SIGNING_PROPERTIES')
 def releaseSigning = new Properties()
 if (releaseSigningFile && file(releaseSigningFile).isFile()) {
@@ -39,6 +39,7 @@ android {
 }
 
 dependencies {
+    testImplementation 'junit:junit:4.13.2'
     implementation 'androidx.core:core:1.13.1'
 }
 
