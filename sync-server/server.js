@@ -350,7 +350,7 @@ button{border:0;border-radius:11px;padding:10px 15px;font:700 13px inherit;curso
 .detail{width:min(680px,calc(100% - 28px));max-height:86vh;border:0;border-radius:22px;padding:0;box-shadow:0 22px 70px #15251f55}.detail::backdrop{background:#15251f66;backdrop-filter:blur(3px)}.detail-card{padding:25px;overflow:auto;max-height:86vh;transition:background-color .7s,border-color .7s;border:1px solid transparent}.detail-card h2{margin:7px 0 6px;font-size:23px;overflow-wrap:anywhere}.detail-card .full-summary{white-space:pre-line;font-size:16px;margin:20px 0 0;padding-top:16px;border-top:1px solid #0002}.detail-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:22px}.detail-actions .danger{color:var(--red-strong);margin-left:auto}.detail-card.state-0{background:var(--red);border-color:var(--red-strong)}.detail-card.state-2{background:var(--blue);border-color:var(--blue-strong)}.detail-card.state-1{background:var(--yellow);border-color:var(--yellow-strong)}.detail-card.state-3{background:var(--green);border-color:var(--green-strong)}
 @media(max-width:700px){.hero{grid-template-columns:1fr}h1{font-size:31px}main{padding:24px 16px}.task{grid-template-columns:1fr auto}.task .delete{display:none}}
 </style></head><body><main>
-<div class="brand"><span class="logo">✓</span><div><strong>拾遗</strong><div class="muted">电脑端 · 私密账号同步</div><div class="key-help" id="account-label">正在检查登录状态…</div></div></div>
+<div class="brand"><span class="logo">✓</span><div><strong>拾遗</strong><div class="muted">电脑端 · 私密账号同步</div><div class="key-help" id="account-label">正在检查登录状态…</div></div><button id="switch-account">切换账号</button></div>
 <section class="hero"><div><h1>在手机上记下，<br>在电脑上完成。</h1><p class="muted">两端操作都会保存到这台电脑，并在下次同步时合并。</p></div><div class="capture"><label>快速收件箱</label><textarea id="draft" placeholder="输入要完成的任务…"></textarea><footer><span class="muted">Ctrl + Enter 快速记录</span><button class="primary" id="add">＋ 记录任务</button></footer></div></section>
 <div class="toolbar"><h2 id="summary">任务列表</h2><div class="toolbar-actions"><span class="sync" id="status">正在连接…</span><button id="refresh">接收最新</button></div></div><input class="search" id="search" placeholder="搜索任务或摘要中的关键词…"><section class="tasks" id="tasks"></section><h3 class="section-title">已完成</h3><section class="tasks" id="completed"></section>
 <dialog class="detail" id="detail"><div class="detail-card" id="detail-card"><div class="muted">任务详情</div><h2 id="detail-text"></h2><p class="muted" id="detail-meta"></p><div class="full-summary" id="detail-summary"></div><div class="detail-actions"><button id="detail-open">打开原链接</button><button id="detail-start">开始任务</button><button id="detail-done">标记完成</button><button class="danger" id="detail-delete">删除</button><button id="detail-close">关闭</button></div></div></dialog>
@@ -358,9 +358,22 @@ button{border:0;border-radius:11px;padding:10px 15px;font:700 13px inherit;curso
 </main><script>
 let tasks=[],stableOrder=[],detailTask=null,query='',authToken=localStorage.getItem('reminder-auth-token')||'';const DAY=86400000;function ageDays(t){return(Date.now()-Number(t.lastViewedAt||t.createdAt||Date.now()))/DAY}function stale(t){return t.state!==3&&ageDays(t)>=7}function cobweb(t){return t.state!==3&&ageDays(t)>=30}function stateName(t){if(t.state===3)return'已完成';if(cobweb(t))return'🕸 久未查看';if(stale(t))return'久未查看';if(t.state===1)return'进行中 · 已查看 '+(t.viewCount||0)+' 次';return(t.viewCount||0)?'已查看 '+t.viewCount+' 次':'未查看'}function visual(t){if(t.state===3)return['#ddf3e2','#2b7e46'];if(stale(t)){const p=Math.max(0,Math.min(1,(ageDays(t)-7)/23));return['rgb('+(255-11*p)+','+(248-33*p)+','+(218-92*p)+')','#a07310']}const fills=['#ffcdcd','#ffdcdc','#ffe8e8','#fff0f0','#fff6f6'],borders=['#be2c2c','#cd4d4d','#d86b6b','#e08989','#e6a4a4'],i=Math.max(0,Math.min(4,t.viewCount||0));return[fills[i],borders[i]]}
 function mergeDownload(incoming){const map=new Map(tasks.map(t=>[String(t.id),t]));for(const remote of incoming){const local=map.get(String(remote.id));if(!local){map.set(String(remote.id),remote);continue}if(Number(remote.updatedAt||0)>Number(local.updatedAt||0)){if(Number(local.summaryUpdatedAt||0)>Number(remote.summaryUpdatedAt||0))Object.assign(remote,{summary:local.summary,summaryStatus:local.summaryStatus,summaryError:local.summaryError,summaryUpdatedAt:local.summaryUpdatedAt});map.set(String(remote.id),remote)}else if(Number(remote.summaryUpdatedAt||0)>Number(local.summaryUpdatedAt||0))Object.assign(local,{summary:remote.summary,summaryStatus:remote.summaryStatus,summaryError:remote.summaryError,summaryUpdatedAt:remote.summaryUpdatedAt})}tasks=[...map.values()]}
-let syncQueue=Promise.resolve(),loadedAccount='';
+let syncQueue=Promise.resolve(),loadedAccount='',cacheReadFailed=false;
+function rememberIdentity(user){localStorage.setItem('reminder-account-binding',JSON.stringify({id:user.id,username:user.username,token:authToken}))}
+function restoreCachedAccount(){
+  try{
+    const raw=localStorage.getItem('reminder-account-binding');if(!raw||!authToken)return;
+    const binding=JSON.parse(raw);if(binding.token!==authToken||!binding.id)return;
+    const cached=localStorage.getItem('reminder-tasks-'+binding.id),restored=cached?JSON.parse(cached):[];
+    if(!Array.isArray(restored)||restored.some(t=>!t||typeof t.text!=='string'||t.id==null))throw new Error('invalid cache');
+    tasks=restored;loadedAccount=binding.id;render();
+    document.querySelector('#account-label').textContent='本地账号：'+binding.username;
+    document.querySelector('#status').textContent='已显示本地任务，等待云端确认';
+  }catch(error){cacheReadFailed=true;document.querySelector('#status').textContent='本地缓存读取失败，已停止同步，请勿清除浏览器数据'}
+}
 function persistTasks(){if(loadedAccount)localStorage.setItem('reminder-tasks-'+loadedAccount,JSON.stringify(tasks))}
 function sync(mode='merge'){
+  if(cacheReadFailed)return Promise.reject(new Error('本地缓存读取失败，已停止同步'));
   const token=authToken;
   try{persistTasks()}catch(error){document.querySelector('#status').textContent='浏览器保存失败，请勿关闭页面';return Promise.reject(error)}
   const job=syncQueue.catch(()=>{}).then(async()=>{
@@ -383,7 +396,7 @@ function sync(mode='merge'){
       if(!Array.isArray(restored))throw new Error('浏览器任务备份损坏，已停止覆盖');
       tasks=restored;loadedAccount=result.user.id;
     }
-    mergeDownload(incoming);persistTasks();render();
+    mergeDownload(incoming);persistTasks();rememberIdentity(result.user);render();
     document.querySelector('#account-label').textContent='已登录：'+result.user.username;
     document.querySelector('#status').textContent='已接收云端 '+incoming.filter(t=>!t.deleted).length+' 项 · 本地 '+tasks.filter(t=>!t.deleted).length+' 项';
   });
@@ -395,12 +408,33 @@ function renderGroup(root,items,empty){root.innerHTML=items.length?'':'<div clas
 function updateDetail(){const t=detailTask,card=document.querySelector('#detail-card'),colors=visual(t);card.className='detail-card state-'+t.state;card.style.background=colors[0];card.style.borderColor=colors[1];document.querySelector('#detail-meta').textContent=stateName(t)+' · '+new Date(t.createdAt).toLocaleString();document.querySelector('#detail-start').textContent=t.state===1?'进行中':t.state===3?'恢复任务':'开始任务';document.querySelector('#detail-done').textContent=t.state===3?'恢复为未完成':'标记完成'}
 async function showDetail(t){detailTask=t;if(t.state!==3){t.viewCount=stale(t)?0:Math.min(4,(t.viewCount||0)+1);t.lastViewedAt=t.updatedAt=Date.now()}document.querySelector('#detail-text').textContent=t.text;document.querySelector('#detail-summary').textContent=t.summary||'';const open=document.querySelector('#detail-open');open.hidden=!/^https?:\\/\\/\\S+$/.test(t.text.trim());open.onclick=()=>window.open(t.text.trim(),'_blank','noopener');updateDetail();document.querySelector('#detail').showModal();if(t.state!==3)await sync('upload')}
 document.querySelector('#detail-start').onclick=async()=>{if(!detailTask)return;detailTask.state=detailTask.state===3?2:1;detailTask.updatedAt=Date.now();updateDetail();await sync('upload')};document.querySelector('#detail-done').onclick=async()=>{if(!detailTask)return;detailTask.state=detailTask.state===3?2:3;detailTask.updatedAt=Date.now();updateDetail();await sync('upload')};document.querySelector('#detail-delete').onclick=async()=>{if(detailTask&&confirm('删除这项任务？')){detailTask.deleted=true;detailTask.updatedAt=Date.now();await sync('upload');document.querySelector('#detail').close()}};document.querySelector('#detail-close').onclick=()=>document.querySelector('#detail').close();document.querySelector('#detail').onclose=()=>{detailTask=null;render()};
-async function add(){if(!loadedAccount||!authToken){showAuth('请先登录并接收账号任务');return}const input=document.querySelector('#draft');const text=input.value.trim();if(!text)return;const now=Date.now();tasks.unshift({id:crypto.randomUUID(),text,createdAt:now,updatedAt:now,reminderAt:0,state:0,deleted:false});try{persistTasks()}catch(error){document.querySelector('#status').textContent='浏览器保存失败，请保留输入内容';return}input.value='';render();await sync('upload')}
+async function add(){if(cacheReadFailed||authenticating||!loadedAccount||!authToken){showAuth('请先登录并接收账号任务');return}const input=document.querySelector('#draft');const text=input.value.trim();if(!text)return;const now=Date.now();const task={id:crypto.randomUUID(),text,createdAt:now,updatedAt:now,reminderAt:0,state:0,deleted:false};tasks.unshift(task);try{persistTasks()}catch(error){tasks=tasks.filter(t=>t!==task);document.querySelector('#status').textContent='浏览器保存失败，请保留输入内容';return}input.value='';render();await sync('upload')}
 function showAuth(message=''){document.querySelector('#auth-error').textContent=message;const dialog=document.querySelector('#auth');if(!dialog.open)dialog.showModal()}
 let authenticating=false;
-async function authenticate(kind){if(authenticating)return;authenticating=true;const username=document.querySelector('#auth-user').value.trim(),password=document.querySelector('#auth-password').value,inviteCode=document.querySelector('#auth-invite').value.trim();document.querySelector('#auth-error').textContent='正在验证…';try{persistTasks();const response=await fetch('/api/auth/'+kind,{method:'POST',signal:AbortSignal.timeout(20000),headers:{'content-type':'application/json'},body:JSON.stringify({username,password,inviteCode})}),result=await response.json();if(!response.ok)throw new Error(result.error||'登录失败');persistTasks();authToken=result.token;localStorage.setItem('reminder-auth-token',authToken);document.querySelector('#account-label').textContent='已登录：'+result.user.username;document.querySelector('#auth').close();tasks=[];stableOrder=[];loadedAccount='';await sync('download')}catch(error){showAuth(error.message)}finally{authenticating=false}}
+async function authenticate(kind){
+ if(authenticating||cacheReadFailed)return;authenticating=true;
+ const username=document.querySelector('#auth-user').value.trim(),password=document.querySelector('#auth-password').value,inviteCode=document.querySelector('#auth-invite').value.trim();
+ document.querySelector('#auth-error').textContent='正在验证…';
+ try{
+   persistTasks();
+   const response=await fetch('/api/auth/'+kind,{method:'POST',signal:AbortSignal.timeout(20000),headers:{'content-type':'application/json'},body:JSON.stringify({username,password,inviteCode})}),result=await response.json();
+   if(!response.ok)throw new Error(result.error||'登录失败');
+   if(!result.user?.id||typeof result.token!=='string')throw new Error('登录响应不完整');
+   persistTasks();
+   const raw=localStorage.getItem('reminder-tasks-'+result.user.id),target=raw?JSON.parse(raw):[];
+   if(!Array.isArray(target)||target.some(t=>!t||typeof t.text!=='string'||t.id==null))throw new Error('目标账号缓存损坏，已停止切换');
+   // Do not change in-memory identity until all fallible persistence is complete.
+   localStorage.setItem('reminder-auth-token',result.token);
+   localStorage.setItem('reminder-account-binding',JSON.stringify({id:result.user.id,username:result.user.username,token:result.token}));
+   authToken=result.token;tasks=target;stableOrder=[];loadedAccount=result.user.id;
+   detailTask=null;document.querySelector('#detail').close();document.querySelector('#auth-password').value='';
+   document.querySelector('#account-label').textContent='已登录：'+result.user.username;
+   document.querySelector('#auth').close();render();await sync('merge');
+ }catch(error){showAuth(error.message)}finally{authenticating=false}
+}
 document.querySelector('#login').onclick=()=>authenticate('login');document.querySelector('#register').onclick=()=>authenticate('register');
-document.querySelector('#add').onclick=add;document.querySelector('#refresh').onclick=()=>sync('download').catch(e=>document.querySelector('#status').textContent=e.message);document.querySelector('#draft').onkeydown=e=>{if(e.ctrlKey&&e.key==='Enter')add()};document.querySelector('#search').oninput=e=>{query=e.target.value.trim().toLowerCase();render()};sync('download').catch(e=>document.querySelector('#status').textContent=e.message);setInterval(()=>{if(tasks.some(t=>t.summaryStatus==='pending'))sync('download').catch(()=>{})},5000);
+document.querySelector('#switch-account').onclick=()=>showAuth('切换前会保留当前账号的本地任务；取消可按 Esc');
+document.querySelector('#add').onclick=()=>add().catch(()=>{});document.querySelector('#refresh').onclick=()=>sync('download').catch(e=>document.querySelector('#status').textContent=e.message);document.querySelector('#draft').onkeydown=e=>{if(e.ctrlKey&&e.key==='Enter')add().catch(()=>{})};document.querySelector('#search').oninput=e=>{query=e.target.value.trim().toLowerCase();render()};restoreCachedAccount();sync('download').catch(e=>document.querySelector('#status').textContent=e.message);setInterval(()=>{if(tasks.some(t=>t.summaryStatus==='pending'))sync('download').catch(()=>{})},5000);
 </script></body></html>`;
 
 const resetPage = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

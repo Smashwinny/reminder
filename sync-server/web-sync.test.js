@@ -27,6 +27,30 @@ test('web retains edits during a slow response, persists failures and isolates a
     vm.runInContext("tasks.push({id:'new',text:'during flight',updatedAt:2});persistTasks()",context);
     reply(requests.shift(), [{id:'old',text:'original',updatedAt:1}]); await tick();
     assert.equal(JSON.parse(disk.get('reminder-tasks-a')).length,2);
+    // Reopening the page can hydrate cached tasks without a network response.
+    vm.runInContext("tasks=[];loadedAccount='';restoreCachedAccount()",context);
+    assert.equal(vm.runInContext('tasks.length',context),2);
+    assert.equal(vm.runInContext('loadedAccount',context),'a');
+    vm.runInContext("authToken='different-session';tasks=[];loadedAccount='';restoreCachedAccount()",context);
+    assert.equal(vm.runInContext('tasks.length',context),0);
+    vm.runInContext("authToken='test-session';restoreCachedAccount()",context);
+    // A failed disk write must not leave a duplicate in memory on retry.
+    nodes.get('#draft').value='must not duplicate';
+    vm.runInContext("originalSetItem=localStorage.setItem;localStorage.setItem=()=>{throw new Error('quota')} ",context);
+    await vm.runInContext('add()',context);await vm.runInContext('add()',context);
+    assert.equal(vm.runInContext('tasks.length',context),2);
+    assert.equal(nodes.get('#draft').value,'must not duplicate');
+    vm.runInContext('localStorage.setItem=originalSetItem',context);
+    // Disk quota failure while switching must not pair old tasks with a new token.
+    vm.runInContext("document.querySelector('#auth-user').value='b';document.querySelector('#auth-password').value='password-b'",context);
+    const switching=vm.runInContext("authenticate('login')",context);await tick();
+    vm.runInContext("localStorage.setItem=(k,v)=>{if(k==='reminder-auth-token')throw new Error('quota');originalSetItem(k,v)}",context);
+    requests.shift().resolve({ok:true,json:async()=>({token:'new-session',user:{id:'b',username:'b'}})});
+    await switching;
+    assert.equal(vm.runInContext('authToken',context),'test-session');
+    assert.equal(vm.runInContext('loadedAccount',context),'a');
+    assert.equal(vm.runInContext('tasks.length',context),2);
+    vm.runInContext('localStorage.setItem=originalSetItem',context);
     vm.runInContext("sync('merge').catch(()=>{})",context); await tick(); requests.shift().reject(new Error('offline')); await tick();
     assert.equal(JSON.parse(disk.get('reminder-tasks-a')).length,2);
     vm.runInContext("sync('merge').catch(()=>{})",context); await tick();
