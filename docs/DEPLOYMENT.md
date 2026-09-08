@@ -11,6 +11,14 @@
 - `deploy/.env` 独立且不进 Git，禁止复制 ISAW 的 JWT、数据库、OSS 或短信密钥。
 - Kimi 使用拾遗自己的 Key；`KIMI_DAILY_SUMMARY_LIMIT` 默认每位用户每日 20 次 API 请求（失败重试也计数），`KIMI_GLOBAL_DAILY_LIMIT` 默认全站每日 200 次。计数在 `summary-usage.json` 持久化，按 UTC 日期重置（北京时间 08:00）。网页处理次数另限为上述数值的 3 倍；队列最多等待 100 项。额度不是金额保证，仍建议在 API 服务商处设置账户消费上限。
 - 新全站限额变量是可选配置，旧部署不增加必填项。数据卷备份会包含计数文件；本机历史备份入口也已加入它。不要删除或编辑该文件来解决同步问题；损坏时暂停摘要消费，普通任务同步仍可用。
+
+### 本机异机备份与桌面告警
+
+`deploy/offsite-check.js` 从阿里云只读拉取最新每日备份，校验 SHA-256，拒绝过期超过 36 小时的备份，解压检查账号、迁移别名、会话归属和任务格式。公网检查失败不阻断备份抢救。备份与恢复目录在 `backups/offsite/`（不提交 Git、目录权限 700）。每小时运行，状态写入 `backups/offsite/status.json`；失败发桌面通知。
+
+当前工作站已安装 `reminder-offsite-check.timer` / `.service`，启用 Persistent 补跑。查看：`systemctl --user status reminder-offsite-check.timer reminder-offsite-check.service`。手动执行：`node deploy/offsite-check.js`。
+
+限制：该定时器是当前工作站配置，脚本 SSH 地址、密钥路径、服务 Node 路径均需按新机器修改（Node 18+）；电脑关机或用户服务未运行时无法检查和通知。全天候外部告警渠道待用户确认。它验证备份可解析且关联一致，不等同于备份恢复后的完整双端登录验收；不能检测两份独立源同时丢失。没有自动删除本机旧备份，需关注磁盘空间。相同备份复用已解压目录，避免每小时重复占用空间。
 - Kimi Key 单独放在权限为 `0600` 的 `deploy/kimi.key`，只读挂载进拾遗容器；不会写入镜像、APK、Git 或 ISAW 环境文件。
 
 ## 首次部署

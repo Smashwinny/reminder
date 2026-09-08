@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Reminder offsite backup and health verification
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+Unit=reminder-offsite-check.service
+
+[Install]
+WantedBy=timers.target

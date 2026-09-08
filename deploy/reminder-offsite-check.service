@@ -1,0 +1,10 @@
+[Unit]
+Description=Verify Reminder public health and restore offsite backup
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hulk/androidapp/reminder
+ExecStart=/home/hulk/.nvm/versions/node/v24.19.0/bin/node /home/hulk/androidapp/reminder/deploy/offsite-check.js
+TimeoutStartSec=5min
+UMask=0077
