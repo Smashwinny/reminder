@@ -39,6 +39,6 @@ test('missing account database with surviving user data cannot register a replac
   const dir = fs.mkdtempSync(path.join(root, 'storage-test-'));
   fs.mkdirSync(path.join(dir, 'users'));
   const store = createAuthStore(dir, { inviteCode: 'long-test-invite-code' });
-  assert.throws(() => store.register('hulk', 'password123', 'long-test-invite-code'), /账号库缺失/);
+  assert.throws(() => store.register('hulk', 'password123', 'long-test-invite-code'), { name: 'StorageError' });
   assert.equal(fs.existsSync(path.join(dir, 'users.json')), false);
 });

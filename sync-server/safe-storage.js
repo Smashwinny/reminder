@@ -39,4 +39,10 @@ function writeArray(file, value) {
   finally { fs.closeSync(fd); }
   fs.renameSync(next, file);
 }
-module.exports = { readArray, writeArray };
+class StorageError extends Error {
+  constructor(cause) { super('Storage unavailable', { cause }); this.name = 'StorageError'; }
+}
+const guarded = fn => (...args) => {
+  try { return fn(...args); } catch (error) { throw new StorageError(error); }
+};
+module.exports = { readArray: guarded(readArray), writeArray: guarded(writeArray), StorageError };

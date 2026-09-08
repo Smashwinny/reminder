@@ -4,7 +4,7 @@ const path = require("node:path");
 const dns = require("node:dns").promises;
 const net = require("node:net");
 const { createAuthStore } = require("./auth-store");
-const { readArray, writeArray } = require('./safe-storage');
+const { readArray, writeArray, StorageError } = require('./safe-storage');
 
 const port = Number(process.env.PORT || 8787);
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, "data");
@@ -238,7 +238,10 @@ async function drainSummaryQueue() {
     const worker = async () => {
       while (summaryQueue.length) {
         const job = summaryQueue.shift();
-        if (job) await summarizeTask(job);
+        if (job) {
+          try { await summarizeTask(job); }
+          catch (error) { console.error(new Date().toISOString(), 'summary job failed', error.name); }
+        }
       }
     };
     await Promise.all(Array.from({ length: summaryConcurrency }, worker));
@@ -246,6 +249,7 @@ async function drainSummaryQueue() {
 }
 
 function scheduleSummaries(userId, tasks) {
+  userId = authStore.storageUserId(userId);
   let changed = false;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   let dailyCount = tasks.filter(task => Number(task.summaryUpdatedAt || 0) >= today.getTime()).length;
@@ -304,6 +308,28 @@ function sendRelease(request, response, file) {
   });
   if (request.method === "HEAD") return response.end();
   fs.createReadStream(file).pipe(response);
+}
+
+function validateSync(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('同步请求必须是对象');
+  if (body.mode !== undefined && !['upload', 'download', 'merge'].includes(body.mode)) throw new Error('未知同步模式');
+  if (body.tasks !== undefined && !Array.isArray(body.tasks)) throw new Error('任务必须是数组');
+  const ids = new Set();
+  for (const task of body.tasks || []) {
+    if (!task || typeof task !== 'object' || Array.isArray(task) ||
+        !['string', 'number'].includes(typeof task.id) || !String(task.id).length ||
+        typeof task.text !== 'string' || !Number.isSafeInteger(task.createdAt)) throw new Error('任务缺少有效 ID、创建时间或内容');
+    if (ids.has(String(task.id))) throw new Error('同一请求包含重复任务 ID');
+    ids.add(String(task.id));
+    for (const field of ['createdAt','updatedAt','summaryUpdatedAt','lastViewedAt','reminderAt','viewCount']) {
+      if (task[field] !== undefined && (!Number.isSafeInteger(task[field]) || task[field] < 0)) throw new Error('任务时间或计数无效');
+    }
+    if (task.state !== undefined && ![0,1,2,3].includes(task.state)) throw new Error('任务状态无效');
+    if (task.deleted !== undefined && typeof task.deleted !== 'boolean') throw new Error('删除状态无效');
+    for (const field of ['summary','summaryStatus','summaryError','attachmentType','attachmentName','attachmentUri']) {
+      if (task[field] !== undefined && typeof task[field] !== 'string') throw new Error('任务文本字段无效');
+    }
+  }
 }
 
 function readJson(request) {
@@ -415,7 +441,7 @@ function createServer() { return http.createServer(async (request, response) => 
       key = authAttemptKey("register", body.username); assertAuthAllowed(key);
       const result = authStore.register(body.username, body.password, body.inviteCode); authAttempts.delete(key);
       return sendJson(response, 201, result);
-    } catch (error) { if (key) recordAuthFailure(key); return sendJson(response, 400, { error: String(error.message || error) }); }
+    } catch (error) { if (error instanceof StorageError) throw error; if (key) recordAuthFailure(key); return sendJson(response, 400, { error: String(error.message || error) }); }
   }
   if (request.method === "POST" && request.url === "/api/auth/login") {
     let key;
@@ -424,13 +450,13 @@ function createServer() { return http.createServer(async (request, response) => 
       key = authAttemptKey("login", body.username); assertAuthAllowed(key);
       const result = authStore.login(body.username, body.password); authAttempts.delete(key);
       return sendJson(response, 200, result);
-    } catch (error) { if (key) recordAuthFailure(key); return sendJson(response, 401, { error: String(error.message || error) }); }
+    } catch (error) { if (error instanceof StorageError) throw error; if (key) recordAuthFailure(key); return sendJson(response, 401, { error: String(error.message || error) }); }
   }
   if (request.method === "POST" && request.url === "/api/auth/reset-password") {
     try {
       const body = await readJson(request);
       return sendJson(response, 200, authStore.resetPassword(body.token, body.password));
-    } catch (error) { return sendJson(response, 400, { error: String(error.message || error) }); }
+    } catch (error) { if (error instanceof StorageError) throw error; return sendJson(response, 400, { error: String(error.message || error) }); }
   }
   if (request.method === "GET" && request.url === "/api/auth/me") {
     const user = authenticatedUser(request);
@@ -445,6 +471,7 @@ function createServer() { return http.createServer(async (request, response) => 
       const user = authenticatedUser(request);
       if (!user) return sendJson(response, 401, { error: "请先登录" });
       const body = await readJson(request);
+      validateSync(body);
       const mode = ["upload", "download", "merge"].includes(body.mode) ? body.mode : "merge";
       const current = readUserTasks(user.id);
       const merged = mode === "download" ? current : mergeTasks(current, Array.isArray(body.tasks) ? body.tasks : []);
@@ -452,6 +479,7 @@ function createServer() { return http.createServer(async (request, response) => 
       if (mode !== "download" || summariesQueued) writeUserTasks(user.id, merged);
       return sendJson(response, 200, { tasks: merged, mode, serverTime: Date.now(), user });
     } catch (error) {
+      if (error instanceof StorageError) throw error;
       return sendJson(response, 400, { error: "请求格式错误" });
     }
   }

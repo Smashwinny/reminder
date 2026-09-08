@@ -79,7 +79,7 @@ test('migrated sessions use a single task store while keeping response identity'
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    const upload = await post(base, '/api/sync', {mode:'upload', tasks:[{id:'alias-task',text:'migration',updatedAt:1}]}, old.token);
+    const upload = await post(base, '/api/sync', {mode:'upload', tasks:[{id:'alias-task',text:'migration',createdAt:1,updatedAt:1}]}, old.token);
     assert.equal(upload.status, 200);
     for (const account of [old, current]) {
       const result = await (await post(base, '/api/sync', {mode:'download',tasks:[]}, account.token)).json();
@@ -89,6 +89,38 @@ test('migrated sessions use a single task store while keeping response identity'
     assert(fs.existsSync(path.join(process.env.DATA_DIR, 'users', current.user.id, 'tasks.json')));
     assert(!fs.existsSync(path.join(process.env.DATA_DIR, 'users', old.user.id, 'tasks.json')));
   } finally { await new Promise(resolve=>server.close(resolve)); }
+});
+
+test('invalid sync payloads never alter data, storage failures do not masquerade as expired login', async () => {
+  const store = createAuthStore(process.env.DATA_DIR, {inviteCode:process.env.REGISTRATION_INVITE_CODE});
+  const account = store.register('adversarial', 'password-test', process.env.REGISTRATION_INVITE_CODE);
+  const server = createServer();
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const task = {id:'keep',text:'survives',createdAt:1,updatedAt:1};
+  const taskFile = path.join(process.env.DATA_DIR,'users',account.user.id,'tasks.json');
+  const originalUsers = fs.readFileSync(store.usersFile);
+  try {
+    assert.equal((await post(base,'/api/sync',{tasks:[task]},account.token)).status,200);
+    const before = fs.readFileSync(taskFile,'utf8');
+    for (const body of [null, [], {mode:'replace',tasks:[]}, {tasks:{}}, {tasks:[null]},
+      {tasks:[task,task]}, {tasks:[{...task,createdAt:undefined}]},
+      {tasks:[{...task,deleted:'false'}]}, {tasks:[{...task,updatedAt:1e100}]},
+      {tasks:[{...task,summary:{bad:true}}]}, {tasks:[{...task,state:9}]}]) {
+      assert.equal((await post(base,'/api/sync',body,account.token)).status,400);
+      assert.equal(fs.readFileSync(taskFile,'utf8'),before);
+    }
+    fs.writeFileSync(taskFile,'broken');
+    assert.equal((await post(base,'/api/sync',{tasks:[]},account.token)).status,503);
+    assert.equal(fs.readFileSync(taskFile,'utf8'),'broken');
+    fs.writeFileSync(taskFile,before);
+    fs.writeFileSync(store.usersFile,'broken');
+    assert.equal((await post(base,'/api/auth/login',{username:'adversarial',password:'password-test'})).status,503);
+    assert.equal(fs.readFileSync(store.usersFile,'utf8'),'broken');
+  } finally {
+    fs.writeFileSync(store.usersFile,originalUsers);
+    await new Promise(resolve=>server.close(resolve));
+  }
 });
 
 test("accounts require invite and each user sees only their own tasks", async () => {

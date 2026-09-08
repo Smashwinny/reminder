@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { readArray, writeArray } = require('./safe-storage');
+const { readArray, writeArray, StorageError } = require('./safe-storage');
 
 const USER_RE = /^[a-zA-Z0-9_\u4e00-\u9fff.-]{3,32}$/u;
 
@@ -32,7 +32,7 @@ function createAuthStore(dataDir, options = {}) {
   function read(file) {
     if (file === usersFile && !fs.existsSync(file) &&
         (fs.existsSync(sessionsFile) || fs.existsSync(path.join(dataDir, 'users')))) {
-      throw new Error('账号库缺失，已停止注册和登录，请恢复备份');
+      throw new StorageError(new Error('Missing account database with surviving data'));
     }
     return readArray(file);
   }
@@ -65,6 +65,7 @@ function createAuthStore(dataDir, options = {}) {
   }
   function login(usernameValue, password) {
     const username = cleanUsername(usernameValue);
+    validateCredentials(username, password);
     const user = read(usersFile).find(item => !item.aliasOf && item.username.toLowerCase() === username.toLowerCase());
     if (!user || !verifyPassword(String(password || ""), user.passwordHash)) throw new Error("用户名或密码错误");
     return { user: publicUser(user), token: issueSession(user.id) };
