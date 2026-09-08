@@ -10,7 +10,9 @@ import org.json.JSONArray;
 
 public final class BootReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
-        String raw = context.getSharedPreferences("tasks_v1", Context.MODE_PRIVATE).getString("items", "[]");
+        android.content.SharedPreferences prefs = context.getSharedPreferences("tasks_v1", Context.MODE_PRIVATE);
+        String user = prefs.getString("current_user_id", "");
+        String raw = prefs.getString(user.isEmpty() ? "items" : "items_" + user, "[]");
         long now = System.currentTimeMillis();
         try {
             JSONArray array = new JSONArray(raw);
@@ -19,7 +21,8 @@ public final class BootReceiver extends BroadcastReceiver {
                 Task task = Task.fromJson(array.getJSONObject(i));
                 if (task.deleted || task.state == Task.DONE || task.reminderAt <= now) continue;
                 Intent reminder = new Intent(context, ReminderReceiver.class)
-                        .putExtra("id", task.id).putExtra("text", task.text);
+                        .putExtra("id", task.id).putExtra("user", user)
+                        .setData(android.net.Uri.parse("reminder://task/" + android.net.Uri.encode(user) + "/" + android.net.Uri.encode(task.id)));
                 PendingIntent pending = PendingIntent.getBroadcast(context, task.id.hashCode(), reminder,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
                 alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, task.reminderAt, pending);

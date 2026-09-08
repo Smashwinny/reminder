@@ -646,6 +646,15 @@ public class MainActivity extends android.app.Activity {
     private void removeTask(Task task) { cancelAlarm(task); task.deleted = true; task.updatedAt = System.currentTimeMillis(); }
 
     private void chooseReminder(Task task) {
+        if (!androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()) {
+            new android.app.AlertDialog.Builder(this).setTitle("通知权限已关闭")
+                    .setMessage("系统不会显示任务提醒。请先在应用设置中开启通知，再设置提醒时间。")
+                    .setPositiveButton("打开设置", (dialog, which) -> startActivity(new Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            android.net.Uri.parse("package:" + getPackageName()))))
+                    .setNegativeButton("暂不设置", null).show();
+            return;
+        }
         Calendar calendar = Calendar.getInstance();
         new DatePickerDialog(this, (view, year, month, day) -> {
             calendar.set(year, month, day);
@@ -660,7 +669,13 @@ public class MainActivity extends android.app.Activity {
     }
 
     private PendingIntent alarmIntent(Task task) {
-        Intent intent = new Intent(this, ReminderReceiver.class).putExtra("id", task.id).putExtra("text", task.text);
+        String user = getSharedPreferences(PREFS, MODE_PRIVATE).getString("current_user_id", "");
+        return alarmIntent(task, user);
+    }
+
+    private PendingIntent alarmIntent(Task task, String user) {
+        Intent intent = new Intent(this, ReminderReceiver.class).putExtra("id", task.id).putExtra("user", user)
+                .setData(android.net.Uri.parse("reminder://task/" + android.net.Uri.encode(user) + "/" + android.net.Uri.encode(task.id)));
         return PendingIntent.getBroadcast(this, task.id.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
 
@@ -668,7 +683,13 @@ public class MainActivity extends android.app.Activity {
         ((AlarmManager) getSystemService(ALARM_SERVICE)).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, task.reminderAt, alarmIntent(task));
     }
 
-    private void cancelAlarm(Task task) { ((AlarmManager) getSystemService(ALARM_SERVICE)).cancel(alarmIntent(task)); }
+    private void cancelAlarm(Task task) {
+        ((AlarmManager) getSystemService(ALARM_SERVICE)).cancel(alarmIntent(task));
+        String user = getSharedPreferences(PREFS, MODE_PRIVATE).getString("current_user_id", "");
+        android.app.NotificationManager manager = getSystemService(android.app.NotificationManager.class);
+        manager.cancel(user + ":" + task.id, 1);
+        manager.cancel(task.id.hashCode()); // Previously delivered legacy notification.
+    }
 
     private void load() {
         String userId = getSharedPreferences(PREFS, MODE_PRIVATE).getString("current_user_id", "");
@@ -743,7 +764,8 @@ public class MainActivity extends android.app.Activity {
             Toast.makeText(this, "登录状态保存失败，已停止同步", Toast.LENGTH_LONG).show();
             return false;
         }
-        for (Task task : tasks) cancelAlarm(task);
+        for (Task task : tasks) ((AlarmManager) getSystemService(ALARM_SERVICE)).cancel(alarmIntent(task, previous));
+        getSystemService(android.app.NotificationManager.class).cancelAll();
         tasks.clear(); tasks.addAll(nextTasks); stableOrder.clear();
         restoreFutureAlarms(); refreshList();
         return true;
